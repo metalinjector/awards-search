@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: awards-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: app_db
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  app:
+    build: .
+    container_name: awards
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@db:5432/app_db
+      # Необязательные ключи внешних сервисов:
+      # TMDB_API_KEY: "ваш_v3_ключ_tmdb"
+      # TMDB_ACCESS_TOKEN: "ваш_v4_токен_tmdb"
+      # JINA_API_KEY: "ваш_ключ_jina_reader"
+    networks:
+      - internal
+      - web
+    # Порт наружу не публикуем — доступ только через Caddy (awards.zonner.site).
+    expose:
+      - "3000"
+
+networks:
+  internal:
+  web:
+    external: true
+
+volumes:
+  pgdata:

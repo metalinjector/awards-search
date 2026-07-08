@@ -1,0 +1,17 @@
+# deps / build
+node_modules/
+.next/
+tsconfig.tsbuildinfo
+
+# env / secrets
+.env
+.env.*
+
+# python
+__pycache__/
+*.pyc
+python-prj/cache/
+
+# misc
+.DS_Store
+*.log
