@@ -1,4 +1,6 @@
-/* IMDb integration via the public suggestion API and api.imdbapi.dev */
+/* IMDb integration via the public suggestion API and imdb.com GraphQL. */
+
+import { imdbGraphql, type GraphqlPageInfo } from "./imdb-graphql";
 
 export interface ImdbSearchResult {
   id: string;
@@ -57,11 +59,11 @@ const UA = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** GET JSON with automatic retries on 429/5xx (api.imdbapi.dev rate-limits bursts) */
+/** GET JSON with short retries for the IMDb suggestion endpoint. */
 async function getJson(url: string, timeoutMs = 30_000): Promise<unknown> {
   let lastError: Error = new Error("request failed");
-  for (let attempt = 0; attempt < 6; attempt++) {
-    if (attempt > 0) await sleep(2000 * 2 ** (attempt - 1)); // 2s,4s,8s,16s,32s
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt > 0) await sleep(1000 * 2 ** (attempt - 1));
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -134,20 +136,139 @@ export function imdbTypeLabel(type?: string): string {
   return TYPE_LABELS[type] ?? type;
 }
 
-interface ApiNomination {
-  nominees?: Array<{
-    id?: string;
-    displayName?: string;
-    primaryImage?: { url?: string };
-    primaryProfessions?: string[];
-  }>;
-  event?: { id?: string; name?: string };
-  year?: number;
-  text?: string;
-  category?: string;
-  isWinner?: boolean;
-  notes?: string;
+interface GraphqlName {
+  id?: string;
+  nameText?: { text?: string };
+  primaryImage?: { url?: string };
+  primaryProfessions?: Array<{ category?: { id?: string } }>;
 }
+
+interface GraphqlTitle {
+  id?: string;
+  titleText?: { text?: string };
+  originalTitleText?: { text?: string };
+  releaseYear?: { year?: number };
+  titleType?: { id?: string };
+  primaryImage?: { url?: string };
+  genres?: { genres?: Array<{ text?: string }> };
+  ratingsSummary?: { aggregateRating?: number; voteCount?: number };
+  plot?: { plotText?: { plainText?: string } };
+}
+
+interface GraphqlNomination {
+  id?: string;
+  isWinner?: boolean;
+  event?: { id?: string; name?: { text?: string } };
+  eventEdition?: { year?: number };
+  award?: { text?: string };
+  category?: { text?: string };
+  notes?: { plainText?: string };
+  awardedEntities?: {
+    awardNames?: Array<{ name?: GraphqlName }>;
+    secondaryAwardNames?: Array<{ name?: GraphqlName }>;
+  };
+}
+
+const GRAPHQL_NAME_FIELDS = `
+  id
+  nameText { text }
+  primaryImage { url }
+  primaryProfessions { category { id } }
+`;
+
+const TITLE_AWARDS_QUERY = `
+query TitleAwards($id: ID!, $first: Int!, $after: ID) {
+  title(id: $id) {
+    id
+    titleText { text }
+    originalTitleText { text }
+    releaseYear { year }
+    primaryImage { url }
+    genres { genres { text } }
+    ratingsSummary { aggregateRating voteCount }
+    plot { plotText { plainText } }
+    principalCredits {
+      category { id text }
+      credits(limit: 10) { name { id nameText { text } } }
+    }
+    nominations(first: $first, after: $after) {
+      total
+      pageInfo { hasNextPage endCursor }
+      edges { node {
+        id
+        isWinner
+        event { id name { text } }
+        eventEdition { year }
+        award { text }
+        category { text }
+        notes { plainText }
+        awardedEntities {
+          ... on AwardedTitles {
+            secondaryAwardNames { name { ${GRAPHQL_NAME_FIELDS} } }
+          }
+          ... on AwardedNames {
+            awardNames { name { ${GRAPHQL_NAME_FIELDS} } }
+          }
+        }
+      } }
+    }
+  }
+}
+`;
+
+const NAME_DETAILS_QUERY = `
+query NameDetails($id: ID!) {
+  name(id: $id) {
+    id
+    nameText { text }
+    primaryImage { url }
+    primaryProfessions { category { id } }
+    birthDate { date }
+    bio { text { plainText } }
+  }
+}
+`;
+
+const NAME_CREDITS_QUERY = `
+query NameCredits($id: ID!, $first: Int!, $after: ID) {
+  name(id: $id) {
+    credits(first: $first, after: $after) {
+      total
+      pageInfo { hasNextPage endCursor }
+      edges { node {
+        category { id }
+        title {
+          id
+          titleText { text }
+          releaseYear { year }
+          titleType { id }
+          ratingsSummary { aggregateRating }
+          primaryImage { url }
+        }
+        ... on Cast { characters { name } }
+      } }
+    }
+  }
+}
+`;
+
+const TITLE_IMAGES_QUERY = `
+query TitleImages($id: ID!, $first: Int!, $after: ID) {
+  title(id: $id) {
+    images(first: $first, after: $after) {
+      total
+      pageInfo { hasNextPage endCursor }
+      edges { node { url width height type } }
+    }
+  }
+}
+`;
+
+const OFFICIAL_TITLE_QUERY = `
+query OfficialTitle($id: ID!) {
+  title(id: $id) { id titleText { text } originalTitleText { text } }
+}
+`;
 
 export interface ImdbNameInfo {
   id: string;
@@ -174,12 +295,15 @@ export interface ImdbPersonPayload {
   filmography: ImdbFilmographyItem[];
 }
 
-/** API returns dates as {year, month, day} objects — normalize to a display string */
+/** Normalize API dates to DD.MM.YYYY where all parts are available. */
 function formatApiDate(
   d: { year?: number; month?: number; day?: number } | string | null | undefined,
 ): string | undefined {
   if (!d) return undefined;
-  if (typeof d === "string") return d;
+  if (typeof d === "string") {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d);
+    return match ? `${match[3]}.${match[2]}.${match[1]}` : d;
+  }
   const parts: string[] = [];
   if (d.day) parts.push(String(d.day).padStart(2, "0"));
   if (d.month) parts.push(String(d.month).padStart(2, "0"));
@@ -193,73 +317,79 @@ export async function fetchImdbPerson(nameId: string): Promise<ImdbPersonPayload
     throw new Error("Некорректный IMDb ID персоны");
   }
 
-  const n = (await getJson(`https://api.imdbapi.dev/names/${nameId}`)) as {
-    displayName?: string;
-    primaryImage?: { url?: string };
-    primaryProfessions?: string[];
-    biography?: string;
-    birthDate?: { year?: number; month?: number; day?: number } | string | null;
-  };
+  const details = await imdbGraphql<{
+    name?: GraphqlName & {
+      birthDate?: { date?: string };
+      bio?: { text?: { plainText?: string } };
+    };
+  }>(NAME_DETAILS_QUERY, { id: nameId });
+  const n = details.name;
+  if (!n) throw new Error("Персона не найдена на IMDb");
+
   const person: ImdbNameInfo = {
     id: nameId,
-    name: n.displayName ?? nameId,
+    name: n.nameText?.text ?? nameId,
     imageUrl: n.primaryImage?.url,
-    professions: n.primaryProfessions,
-    biography: n.biography,
-    birthDate: formatApiDate(n.birthDate),
+    professions: (n.primaryProfessions ?? [])
+      .map((item) => item.category?.id)
+      .filter((id): id is string => Boolean(id)),
+    biography: n.bio?.text?.plainText,
+    birthDate: formatApiDate(n.birthDate?.date),
   };
 
   const filmography: ImdbFilmographyItem[] = [];
   const seen = new Set<string>();
   let pageToken: string | undefined;
+  const seenTokens = new Set<string>();
   for (let page = 0; page < 20; page++) {
-    if (page > 0) await sleep(1000); // stay under the API burst limit
-    const url =
-      `https://api.imdbapi.dev/names/${nameId}/filmography?pageSize=50` +
-      (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "");
-    interface FilmPage {
-      credits?: Array<{
-        title?: {
-          id?: string;
-          primaryTitle?: string;
-          startYear?: number;
-          type?: string;
-          rating?: { aggregateRating?: number };
-          primaryImage?: { url?: string };
+    const data = await imdbGraphql<{
+      name?: {
+        credits?: {
+          pageInfo?: GraphqlPageInfo;
+          edges?: Array<{
+            node?: {
+              category?: { id?: string };
+              title?: GraphqlTitle;
+              characters?: Array<{ name?: string }>;
+            };
+          }>;
         };
-        category?: string;
-        characters?: string[];
-      }>;
-      nextPageToken?: string;
-    }
-    let data: FilmPage;
-    try {
-      data = (await getJson(url)) as FilmPage;
-    } catch (err) {
-      // Rate-limited mid-pagination: return what we already have
-      // (better a partial filmography than an error screen).
-      if (filmography.length > 0) break;
-      throw err;
-    }
-    for (const c of data.credits ?? []) {
-      const t = c.title;
-      if (!t?.id || !t.primaryTitle) continue;
-      const key = `${t.id}:${c.category ?? ""}`;
+      };
+    }>(NAME_CREDITS_QUERY, { id: nameId, first: 100, after: pageToken ?? null });
+    if (!data.name) throw new Error("Персона не найдена на IMDb");
+    const connection = data.name.credits;
+    for (const edge of connection?.edges ?? []) {
+      const credit = edge.node;
+      if (!credit) continue;
+      const title = credit.title;
+      const titleText = title?.titleText?.text;
+      if (!title?.id || !titleText) continue;
+      const category = credit.category?.id;
+      const key = `${title.id}:${category ?? ""}`;
       if (seen.has(key)) continue;
       seen.add(key);
       filmography.push({
-        titleId: t.id,
-        title: t.primaryTitle,
-        year: t.startYear,
-        type: t.type,
-        category: c.category,
-        characters: c.characters,
-        rating: t.rating?.aggregateRating,
-        imageUrl: t.primaryImage?.url,
+        titleId: title.id,
+        title: titleText,
+        year: title.releaseYear?.year,
+        type: title.titleType?.id,
+        category,
+        characters: (credit.characters ?? [])
+          .map((character) => character.name)
+          .filter((name): name is string => Boolean(name)),
+        rating: title.ratingsSummary?.aggregateRating,
+        imageUrl: title.primaryImage?.url,
       });
     }
-    pageToken = data.nextPageToken;
-    if (!pageToken) break;
+    const nextToken = connection?.pageInfo?.hasNextPage
+      ? connection.pageInfo.endCursor ?? undefined
+      : undefined;
+    if (!nextToken) break;
+    if (seenTokens.has(nextToken)) {
+      throw new Error("IMDb вернул повторяющийся токен фильмографии");
+    }
+    seenTokens.add(nextToken);
+    pageToken = nextToken;
   }
 
   filmography.sort((a, b) => (b.year ?? 0) - (a.year ?? 0));
@@ -290,25 +420,44 @@ export async function fetchTitleImages(
   if (!/^tt\d{4,12}$/.test(imdbId)) {
     throw new Error("Некорректный IMDb ID");
   }
-  const url =
-    `https://api.imdbapi.dev/titles/${imdbId}/images?pageSize=${pageSize}` +
-    (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "");
-  const d = (await getJson(url)) as {
-    images?: { url?: string; width?: number; height?: number; type?: string }[];
-    totalCount?: number;
-    nextPageToken?: string;
-  };
+  const data = await imdbGraphql<{
+    title?: {
+      images?: {
+        total?: number;
+        pageInfo?: GraphqlPageInfo;
+        edges?: Array<{
+          node?: {
+            url?: string;
+            width?: number;
+            height?: number;
+            type?: string;
+          };
+        }>;
+      };
+    };
+  }>(TITLE_IMAGES_QUERY, {
+    id: imdbId,
+    first: Math.min(50, Math.max(1, pageSize)),
+    after: pageToken ?? null,
+  });
+  if (!data.title) throw new Error("Фильм не найден на IMDb");
+  const images = data.title.images;
   return {
-    images: (d.images ?? [])
-      .filter((i) => i.url)
-      .map((i) => ({
-        url: i.url as string,
-        width: i.width,
-        height: i.height,
-        type: i.type,
+    images: (images?.edges ?? [])
+      .map((edge) => edge.node)
+      .filter((image): image is NonNullable<typeof image> & { url: string } =>
+        Boolean(image?.url),
+      )
+      .map((image) => ({
+        url: image.url,
+        width: image.width,
+        height: image.height,
+        type: image.type,
       })),
-    totalCount: d.totalCount ?? 0,
-    nextPageToken: d.nextPageToken,
+    totalCount: images?.total ?? 0,
+    nextPageToken: images?.pageInfo?.hasNextPage
+      ? images.pageInfo.endCursor ?? undefined
+      : undefined,
   };
 }
 
@@ -317,11 +466,12 @@ export async function fetchOfficialTitle(imdbId: string): Promise<string> {
   if (!/^tt\d{4,12}$/.test(imdbId)) {
     throw new Error("Некорректный IMDb ID");
   }
-  const t = (await getJson(`https://api.imdbapi.dev/titles/${imdbId}`)) as {
-    primaryTitle?: string;
-    originalTitle?: string;
-  };
-  return t.originalTitle || t.primaryTitle || imdbId;
+  const data = await imdbGraphql<{ title?: GraphqlTitle }>(OFFICIAL_TITLE_QUERY, {
+    id: imdbId,
+  });
+  const title = data.title;
+  if (!title) throw new Error("Фильм не найден на IMDb");
+  return title.originalTitleText?.text || title.titleText?.text || imdbId;
 }
 
 /** Fetch title info + ALL award nominations (recursively through pagination) */
@@ -330,94 +480,150 @@ export async function fetchImdbAwards(imdbId: string): Promise<ImdbAwardsPayload
     throw new Error("Некорректный IMDb ID");
   }
 
-  // title info
-  interface ApiPerson {
-    id?: string;
-    displayName?: string;
+  interface PrincipalCredit {
+    category?: { id?: string; text?: string };
+    credits?: Array<{ name?: GraphqlName }>;
   }
-  const t = (await getJson(`https://api.imdbapi.dev/titles/${imdbId}`)) as {
-    id?: string;
-    primaryTitle?: string;
-    originalTitle?: string;
-    startYear?: number;
-    primaryImage?: { url?: string };
-    genres?: string[];
-    rating?: { aggregateRating?: number; voteCount?: number };
-    plot?: string;
-    directors?: ApiPerson[];
-    writers?: ApiPerson[];
-    stars?: ApiPerson[];
-  };
-  const mapPeople = (arr?: ApiPerson[]): ImdbPerson[] =>
-    (arr ?? [])
-      .filter((p) => p.displayName)
-      .map((p) => ({ id: p.id, name: p.displayName as string }));
-  const title: ImdbTitleInfo = {
-    id: imdbId,
-    title: t.primaryTitle ?? imdbId,
-    originalTitle: t.originalTitle,
-    year: t.startYear,
-    imageUrl: t.primaryImage?.url,
-    genres: t.genres,
-    rating: t.rating?.aggregateRating,
-    voteCount: t.rating?.voteCount,
-    plot: t.plot,
-    directors: mapPeople(t.directors),
-    writers: mapPeople(t.writers),
-    stars: mapPeople(t.stars),
+  interface AwardsConnection {
+    total?: number;
+    pageInfo?: GraphqlPageInfo;
+    edges?: Array<{ node?: GraphqlNomination }>;
+  }
+
+  const mapPrincipalPeople = (
+    credits: PrincipalCredit[] | undefined,
+    categoryMatches: (category: string) => boolean,
+  ): ImdbPerson[] => {
+    const seen = new Set<string>();
+    const people: ImdbPerson[] = [];
+    for (const group of credits ?? []) {
+      const category = `${group.category?.id ?? ""} ${group.category?.text ?? ""}`
+        .trim()
+        .toLowerCase();
+      if (!categoryMatches(category)) continue;
+      for (const credit of group.credits ?? []) {
+        const name = credit.name?.nameText?.text;
+        if (!name) continue;
+        const key = credit.name?.id ?? name;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        people.push({ id: credit.name?.id, name });
+      }
+    }
+    return people;
   };
 
-  // all nominations with pagination (max ~40 pages as a safety cap)
+  const mapNominees = (nomination: GraphqlNomination): ImdbNominee[] => {
+    const entities = nomination.awardedEntities;
+    const candidates = [
+      ...(entities?.awardNames ?? []),
+      ...(entities?.secondaryAwardNames ?? []),
+    ];
+    const seen = new Set<string>();
+    const people: ImdbNominee[] = [];
+    for (const item of candidates) {
+      const name = item.name?.nameText?.text;
+      if (!name) continue;
+      const key = item.name?.id ?? name;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      people.push({
+        id: item.name?.id,
+        name,
+        imageUrl: item.name?.primaryImage?.url,
+        professions: (item.name?.primaryProfessions ?? [])
+          .map((profession) => profession.category?.id)
+          .filter((id): id is string => Boolean(id)),
+      });
+    }
+    return people;
+  };
+
+  let title: ImdbTitleInfo | undefined;
   const nominations: ImdbNomination[] = [];
-  let stats = { nominationCount: 0, winCount: 0 };
+  const seenNominations = new Set<string>();
+  const seenTokens = new Set<string>();
+  let reportedTotal = 0;
   let pageToken: string | undefined;
 
   for (let page = 0; page < 40; page++) {
-    if (page > 0) await sleep(1000); // stay under the API burst limit
-    const url =
-      `https://api.imdbapi.dev/titles/${imdbId}/awardNominations?pageSize=50` +
-      (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : "");
-    interface AwardsPage {
-      stats?: { nominationCount?: number; winCount?: number };
-      awardNominations?: ApiNomination[];
-      nextPageToken?: string;
-    }
-    let data: AwardsPage;
-    try {
-      data = (await getJson(url)) as AwardsPage;
-    } catch (err) {
-      // Rate-limited mid-pagination: keep the partial nomination list
-      if (nominations.length > 0) break;
-      throw err;
-    }
-    if (data.stats) {
-      stats = {
-        nominationCount: data.stats.nominationCount ?? 0,
-        winCount: data.stats.winCount ?? 0,
+    const data = await imdbGraphql<{
+      title?: GraphqlTitle & {
+        principalCredits?: PrincipalCredit[];
+        nominations?: AwardsConnection;
+      };
+    }>(TITLE_AWARDS_QUERY, {
+      id: imdbId,
+      first: 100,
+      after: pageToken ?? null,
+    });
+    const rawTitle = data.title;
+    if (!rawTitle) throw new Error("Фильм не найден на IMDb");
+
+    if (!title) {
+      const principalCredits = rawTitle.principalCredits;
+      title = {
+        id: rawTitle.id ?? imdbId,
+        title: rawTitle.titleText?.text ?? imdbId,
+        originalTitle: rawTitle.originalTitleText?.text,
+        year: rawTitle.releaseYear?.year,
+        imageUrl: rawTitle.primaryImage?.url,
+        genres: (rawTitle.genres?.genres ?? [])
+          .map((genre) => genre.text)
+          .filter((genre): genre is string => Boolean(genre)),
+        rating: rawTitle.ratingsSummary?.aggregateRating,
+        voteCount: rawTitle.ratingsSummary?.voteCount,
+        plot: rawTitle.plot?.plotText?.plainText,
+        directors: mapPrincipalPeople(principalCredits, (category) =>
+          category.includes("director"),
+        ),
+        writers: mapPrincipalPeople(principalCredits, (category) =>
+          category.includes("writer"),
+        ),
+        stars: mapPrincipalPeople(
+          principalCredits,
+          (category) => category.includes("star") || category.includes("cast"),
+        ),
       };
     }
-    for (const n of data.awardNominations ?? []) {
+
+    const connection = rawTitle.nominations;
+    reportedTotal = Math.max(reportedTotal, connection?.total ?? 0);
+    for (const edge of connection?.edges ?? []) {
+      const nomination = edge.node;
+      if (!nomination) continue;
+      const key = nomination.id ?? JSON.stringify(nomination);
+      if (seenNominations.has(key)) continue;
+      seenNominations.add(key);
       nominations.push({
-        eventId: n.event?.id ?? "",
-        eventName: n.event?.name ?? "Unknown event",
-        year: n.year,
-        awardText: n.text,
-        category: n.category,
-        isWinner: Boolean(n.isWinner),
-        notes: n.notes,
-        nominees: (n.nominees ?? [])
-          .filter((p) => p.displayName)
-          .map((p) => ({
-            id: p.id,
-            name: p.displayName as string,
-            imageUrl: p.primaryImage?.url,
-            professions: p.primaryProfessions,
-          })),
+        eventId: nomination.event?.id ?? "",
+        eventName: nomination.event?.name?.text ?? "Unknown event",
+        year: nomination.eventEdition?.year,
+        awardText: nomination.award?.text,
+        category: nomination.category?.text,
+        isWinner: Boolean(nomination.isWinner),
+        notes: nomination.notes?.plainText,
+        nominees: mapNominees(nomination),
       });
     }
-    pageToken = data.nextPageToken;
-    if (!pageToken) break;
+
+    const nextToken = connection?.pageInfo?.hasNextPage
+      ? connection.pageInfo.endCursor ?? undefined
+      : undefined;
+    if (!nextToken) break;
+    if (seenTokens.has(nextToken)) {
+      throw new Error("IMDb вернул повторяющийся токен наград");
+    }
+    seenTokens.add(nextToken);
+    pageToken = nextToken;
   }
 
-  return { title, stats, nominations };
+  if (!title) throw new Error("Фильм не найден на IMDb");
+  const winCount = nominations.filter((nomination) => nomination.isWinner).length;
+  const total = Math.max(reportedTotal, nominations.length);
+  return {
+    title,
+    stats: { winCount, nominationCount: Math.max(0, total - winCount) },
+    nominations,
+  };
 }

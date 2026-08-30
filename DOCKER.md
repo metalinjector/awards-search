@@ -17,7 +17,7 @@
 - Docker Engine 24+ и Docker Compose v2 (`docker compose version`)
 - ~2 ГБ свободного места (образ + база)
 - Доступ в интернет из контейнера (сервис обращается к kinopoisk.ru через
-  Jina Reader, api.imdbapi.dev, themoviedb.org)
+  Jina Reader, api.graphql.imdb.com, v3.sg.media-imdb.com, themoviedb.org)
 
 ## Быстрый старт
 

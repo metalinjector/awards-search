@@ -183,8 +183,8 @@ export default function ImdbSearch() {
       {phase === "loading" && (
         <div className="mt-6 flex items-center gap-3 rounded-2xl border border-yellow-200/20 bg-yellow-500/10 px-5 py-5 text-yellow-200">
           <span className="inline-block h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-yellow-300 border-t-transparent" />
-          Собираем все номинации с IMDb (рекурсивно, страница за страницей) — для
-          фильмов с сотнями наград это может занять до минуты…
+          Загружаем карточку и все награды с IMDb — большие списки обрабатываются
+          страница за страницей…
         </div>
       )}
 

@@ -37,7 +37,10 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
   const [viewerIndex, setViewerIndex] = useState(0);
   const fetchingRef = useRef(false);
   const stateRef = useRef({ images, nextToken, totalCount });
-  stateRef.current = { images, nextToken, totalCount };
+
+  useEffect(() => {
+    stateRef.current = { images, nextToken, totalCount };
+  }, [images, nextToken, totalCount]);
 
   /** Load pages until we have at least `until+1` images (or run out) */
   const ensureLoaded = useCallback(
@@ -85,11 +88,6 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
     if (mode !== "grid") return;
     ensureLoaded((page + 1) * pageSize - 1);
   }, [mode, page, pageSize, ensureLoaded]);
-
-  // clamp page when grid size changes
-  useEffect(() => {
-    if (totalCount !== null && page >= totalPages) setPage(totalPages - 1);
-  }, [page, totalPages, totalCount]);
 
   const openGallery = () => {
     setMode("grid");
@@ -221,28 +219,40 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
               <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-300">
                 <span className="mr-1 text-slate-500">сетка</span>
                 <button
-                  onClick={() => setCols((v) => gridStep(v, -1))}
+                  onClick={() => {
+                    setCols((v) => gridStep(v, -1));
+                    setPage(0);
+                  }}
                   className="h-5 w-5 rounded bg-white/10 hover:bg-white/25"
                 >
                   −
                 </button>
                 <span className="w-3 text-center font-semibold text-white">{cols}</span>
                 <button
-                  onClick={() => setCols((v) => gridStep(v, 1))}
+                  onClick={() => {
+                    setCols((v) => gridStep(v, 1));
+                    setPage(0);
+                  }}
                   className="h-5 w-5 rounded bg-white/10 hover:bg-white/25"
                 >
                   +
                 </button>
                 <span className="px-0.5 text-slate-500">×</span>
                 <button
-                  onClick={() => setRows((v) => gridStep(v, -1))}
+                  onClick={() => {
+                    setRows((v) => gridStep(v, -1));
+                    setPage(0);
+                  }}
                   className="h-5 w-5 rounded bg-white/10 hover:bg-white/25"
                 >
                   −
                 </button>
                 <span className="w-3 text-center font-semibold text-white">{rows}</span>
                 <button
-                  onClick={() => setRows((v) => gridStep(v, 1))}
+                  onClick={() => {
+                    setRows((v) => gridStep(v, 1));
+                    setPage(0);
+                  }}
                   className="h-5 w-5 rounded bg-white/10 hover:bg-white/25"
                 >
                   +

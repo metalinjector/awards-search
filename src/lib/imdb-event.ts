@@ -3,6 +3,8 @@
  * of a specific award ceremony (e.g. Oscars 2025).
  */
 
+import { imdbGraphql } from "./imdb-graphql";
+
 export interface EventEntity {
   /** tt... or nm... */
   id: string;
@@ -29,8 +31,6 @@ export interface EventEditionPayload {
   year: number;
   categories: EventCategory[];
 }
-
-const GRAPHQL_URL = "https://api.graphql.imdb.com/";
 
 const QUERY = `
 query EventEdition($eventId: ID!, $year: Int!) {
@@ -89,44 +89,6 @@ interface RawNominationNode {
   };
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-async function gql(variables: Record<string, unknown>): Promise<unknown> {
-  let lastError: Error = new Error("GraphQL request failed");
-  for (let attempt = 0; attempt < 4; attempt++) {
-    if (attempt > 0) await sleep(1500 * 2 ** (attempt - 1));
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 45_000);
-    try {
-      const res = await fetch(GRAPHQL_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: QUERY, variables }),
-        signal: controller.signal,
-        cache: "no-store",
-      });
-      if (res.status === 429 || res.status >= 500) {
-        lastError = new Error(`HTTP ${res.status}`);
-        continue;
-      }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as {
-        data?: unknown;
-        errors?: Array<{ message?: string }>;
-      };
-      if (data.errors?.length) {
-        throw new Error(data.errors[0]?.message ?? "GraphQL error");
-      }
-      return data.data;
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  throw lastError;
-}
-
 function mapTitles(items?: RawTitle[]): EventEntity[] {
   return (items ?? [])
     .filter((t) => t.title?.id && t.title.titleText?.text)
@@ -155,7 +117,7 @@ export async function fetchEventEdition(
   if (!/^ev\d{4,12}$/.test(eventId)) throw new Error("Некорректный ID события");
   if (year < 1900 || year > 2100) throw new Error("Некорректный год");
 
-  const data = (await gql({ eventId, year })) as {
+  const data = await imdbGraphql<{
     nominationEvent?: {
       id?: string;
       name?: { text?: string };
@@ -174,7 +136,7 @@ export async function fetchEventEdition(
         }>;
       }>;
     };
-  };
+  }>(QUERY, { eventId, year });
 
   const ev = data.nominationEvent;
   if (!ev) throw new Error("Событие не найдено на IMDb");

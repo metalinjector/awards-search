@@ -30,8 +30,7 @@ COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
 COPY package.json next.config.ts tsconfig.json drizzle.config.json ./
 COPY src/db ./src/db
-COPY src/lib/types.ts ./src/lib/types.ts
-COPY src/lib/imdb.ts ./src/lib/imdb.ts
+COPY src/lib ./src/lib
 COPY docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
 
