@@ -1,8 +1,11 @@
 node_modules
 .next
 .git
+.github
 .env
+.env.*
 *.log
 python-prj
+tests
 README*.md
 DOCKER.md
