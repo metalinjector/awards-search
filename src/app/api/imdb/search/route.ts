@@ -1,23 +1,20 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
+import { jsonError } from "@/lib/api";
 import { searchImdbTitles } from "@/lib/imdb";
+import { rateLimited } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   const q = (req.nextUrl.searchParams.get("q") ?? "").trim();
-  if (q.length < 2) {
-    return NextResponse.json(
-      { error: "Введите название (минимум 2 символа)" },
-      { status: 400 },
-    );
+  if (q.length < 2 || q.length > 200) {
+    return jsonError("Введите название (минимум 2 символа)", 400);
   }
+  const limited = rateLimited(req, "search");
+  if (limited) return limited;
   try {
-    const results = await searchImdbTitles(q);
-    return NextResponse.json({ results });
+    return Response.json({ results: await searchImdbTitles(q) });
   } catch {
-    return NextResponse.json(
-      { error: "IMDb не отвечает, попробуйте ещё раз" },
-      { status: 502 },
-    );
+    return jsonError("IMDb не отвечает, попробуйте ещё раз", 502);
   }
 }

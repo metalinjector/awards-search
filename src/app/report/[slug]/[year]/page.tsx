@@ -1,7 +1,16 @@
 import Link from "next/link";
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import ReportView from "@/components/ReportView";
-import { getOrCreateReport } from "@/lib/report-service";
+import { AWARD_SLUG, parseYear } from "@/lib/api";
+import { awardNameBySlug } from "@/lib/awards";
+import { errorText } from "@/lib/log";
+import { limitFor, RATE_LIMIT_MESSAGE } from "@/lib/rate-limit";
+import {
+  getCachedReport,
+  getOrCreateReport,
+  type StoredReport,
+} from "@/lib/report-service";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -12,23 +21,35 @@ interface Props {
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { slug, year } = await params;
-  return { title: `Отчёт: ${slug} ${year} — Кинонаграды` };
+  const name = awardNameBySlug.get(slug.toLowerCase()) ?? slug;
+  return { title: `${name} ${year} — Кинонаграды` };
 }
 
 export default async function ReportPage({ params }: Props) {
-  const { slug, year: yearStr } = await params;
-  const year = parseInt(yearStr, 10);
+  const { slug: rawSlug, year: yearStr } = await params;
+  const slug = rawSlug.toLowerCase();
+  const year = /^\d{4}$/.test(yearStr) ? parseYear(yearStr) : null;
 
-  if (!/^[a-z0-9_\-]+$/i.test(slug) || !Number.isFinite(year)) {
+  if (!AWARD_SLUG.test(slug) || year === null) {
     return <ErrorScreen message="Некорректный адрес отчёта." />;
   }
 
-  let data: Awaited<ReturnType<typeof getOrCreateReport>> | null = null;
+  let data: StoredReport | null = null;
   let errorMessage = "Не удалось построить отчёт.";
   try {
-    data = await getOrCreateReport(slug.toLowerCase(), year);
+    // A cached report is served as is. Building a new one means scraping
+    // Kinopoisk for up to a few minutes, so that path is rate-limited and
+    // skips pages recently found to be absent.
+    data = await getCachedReport(slug, year);
+    if (!data) {
+      if (limitFor(await headers(), "report").ok) {
+        data = await getOrCreateReport(slug, year, { useMissCache: true });
+      } else {
+        errorMessage = RATE_LIMIT_MESSAGE;
+      }
+    }
   } catch (err) {
-    if (err instanceof Error) errorMessage = err.message;
+    errorMessage = errorText(err) || errorMessage;
   }
 
   if (!data) {
@@ -37,7 +58,7 @@ export default async function ReportPage({ params }: Props) {
   return (
     <ReportView
       payload={data.payload}
-      slug={slug.toLowerCase()}
+      slug={slug}
       fetchedAt={data.fetchedAt.toISOString()}
     />
   );

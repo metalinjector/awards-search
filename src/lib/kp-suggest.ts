@@ -1,5 +1,7 @@
 /* Kinopoisk film suggestions: search page fetched via Jina Reader, parsed from markdown */
 
+import { BROWSER_UA, fetchText } from "./http";
+
 export interface KpSuggestItem {
   kpId: string;
   title: string;
@@ -84,31 +86,10 @@ export async function searchKinopoiskFilms(
   const url =
     "https://r.jina.ai/https://www.kinopoisk.ru/index.php?kp_query=" +
     encodeURIComponent(query);
-  const headers: Record<string, string> = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-  };
+  const headers: Record<string, string> = { "User-Agent": BROWSER_UA };
   if (process.env.JINA_API_KEY) {
     headers["Authorization"] = `Bearer ${process.env.JINA_API_KEY}`;
   }
-
-  let lastError: Error = new Error("Поиск не удался");
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 75_000);
-    try {
-      const res = await fetch(url, {
-        headers,
-        signal: controller.signal,
-        cache: "no-store",
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const md = await res.text();
-      return parseKpSearchMarkdown(md);
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  throw lastError;
+  const md = await fetchText(url, { headers, timeoutMs: 75_000, retries: 1 });
+  return parseKpSearchMarkdown(md);
 }

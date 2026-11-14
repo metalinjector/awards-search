@@ -7,14 +7,19 @@ import type { KpSuggestItem } from "@/lib/kp-suggest";
 export default function FilmSearchForm({
   defaultQuery = "",
   defaultYear,
+  defaultKpId,
 }: {
   defaultQuery?: string;
   defaultYear?: number;
+  /** Kinopoisk id of the film picked earlier — keeps the search exact */
+  defaultKpId?: string;
 }) {
   const router = useRouter();
   const [q, setQ] = useState(defaultQuery);
   const [year, setYear] = useState<string>(defaultYear ? String(defaultYear) : "");
   const [error, setError] = useState<string | null>(null);
+  // set when the film was picked from Kinopoisk; typing a different title clears it
+  const [kpId, setKpId] = useState<string | undefined>(defaultKpId);
 
   // "Подобрать" modal state
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -35,7 +40,9 @@ export default function FilmSearchForm({
       return;
     }
     setError(null);
-    router.push(`/film?q=${encodeURIComponent(query)}&year=${y}`);
+    router.push(
+      `/film?q=${encodeURIComponent(query)}&year=${y}` + (kpId ? `&kp=${kpId}` : ""),
+    );
   }
 
   async function openPicker() {
@@ -67,6 +74,7 @@ export default function FilmSearchForm({
 
   function pick(item: KpSuggestItem) {
     setQ(item.title);
+    setKpId(item.kpId);
     if (item.year) setYear(String(item.year));
     setPickerOpen(false);
   }
@@ -88,7 +96,10 @@ export default function FilmSearchForm({
           <input
             type="text"
             value={q}
-            onChange={(e) => setQ(e.target.value)}
+            onChange={(e) => {
+              setQ(e.target.value);
+              setKpId(undefined);
+            }}
             placeholder="Название фильма, например: Грешники или Sinners"
             className="w-full rounded-xl border border-amber-200/20 bg-white/10 px-5 py-4 pr-14 text-base text-white placeholder-slate-400 outline-none backdrop-blur transition focus:border-amber-400/60 focus:bg-white/15"
           />
@@ -123,6 +134,12 @@ export default function FilmSearchForm({
       {error && (
         <div className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-5 py-3 text-sm text-red-300">
           {error}
+        </div>
+      )}
+      {kpId && (
+        <div className="mt-2 text-xs text-slate-500">
+          Фильм выбран на Кинопоиске — поиск будет точным, по его карточке, а не по
+          названию.
         </div>
       )}
 

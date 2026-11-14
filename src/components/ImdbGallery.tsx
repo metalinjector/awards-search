@@ -28,16 +28,20 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
   const [mode, setMode] = useState<Mode>("closed");
   const [images, setImages] = useState<GalleryImage[]>([]);
   const [totalCount, setTotalCount] = useState<number | null>(null);
-  const [nextToken, setNextToken] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [galleryError, setGalleryError] = useState<string | null>(null);
   const [cols, setCols] = useState(3);
   const [rows, setRows] = useState(3);
-  const [page, setPage] = useState(0);
+  const [pageIndex, setPage] = useState(0);
   const [viewerIndex, setViewerIndex] = useState(0);
   const fetchingRef = useRef(false);
-  const stateRef = useRef({ images, nextToken, totalCount });
-  stateRef.current = { images, nextToken, totalCount };
+  // what the loader has fetched so far — the source of truth for async code,
+  // mirrored into state for rendering
+  const stateRef = useRef<{
+    images: GalleryImage[];
+    nextToken: string | undefined;
+    totalCount: number | null;
+  }>({ images: [], nextToken: undefined, totalCount: null });
 
   /** Load pages until we have at least `until+1` images (or run out) */
   const ensureLoaded = useCallback(
@@ -61,8 +65,8 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
           imgs = [...imgs, ...data.images];
           token = data.nextPageToken;
           total = data.totalCount ?? imgs.length;
+          stateRef.current = { images: imgs, nextToken: token, totalCount: total };
           setImages(imgs);
-          setNextToken(token);
           setTotalCount(total);
           if (!token) break;
         }
@@ -79,17 +83,14 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
   const pageSize = cols * rows;
   const total = totalCount ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  // the stored page may point past the end after the grid size grows — clamp on read
+  const page = Math.min(pageIndex, totalPages - 1);
 
   // keep the visible grid page loaded
   useEffect(() => {
     if (mode !== "grid") return;
     ensureLoaded((page + 1) * pageSize - 1);
   }, [mode, page, pageSize, ensureLoaded]);
-
-  // clamp page when grid size changes
-  useEffect(() => {
-    if (totalCount !== null && page >= totalPages) setPage(totalPages - 1);
-  }, [page, totalPages, totalCount]);
 
   const openGallery = () => {
     setMode("grid");
@@ -317,7 +318,7 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
             {/* pagination */}
             <div className="flex items-center justify-center gap-4 border-t border-white/10 px-4 py-3">
               <button
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                onClick={() => setPage(Math.max(0, page - 1))}
                 disabled={page === 0}
                 className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/25 disabled:opacity-30"
               >
@@ -327,7 +328,7 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
                 {page + 1} / {totalPages}
               </span>
               <button
-                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
                 disabled={page + 1 >= totalPages}
                 className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/25 disabled:opacity-30"
               >

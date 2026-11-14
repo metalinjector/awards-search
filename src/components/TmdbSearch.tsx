@@ -19,6 +19,9 @@ export default function TmdbSearch() {
   const [keySaving, setKeySaving] = useState(false);
   const [keyError, setKeyError] = useState<string | null>(null);
   const [keySaved, setKeySaved] = useState(false);
+  // the stored key is shared by all visitors — changing it needs the admin token
+  const [canManage, setCanManage] = useState(false);
+  const [adminToken, setAdminToken] = useState("");
 
   useEffect(() => {
     fetch("/api/tmdb/status")
@@ -26,6 +29,7 @@ export default function TmdbSearch() {
       .then((d) => {
         setConfigured(Boolean(d.configured));
         setFromEnv(Boolean(d.fromEnv));
+        setCanManage(Boolean(d.canManage));
       })
       .catch(() => setConfigured(null));
   }, []);
@@ -42,7 +46,10 @@ export default function TmdbSearch() {
     try {
       const res = await fetch("/api/tmdb/key", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-token": adminToken.trim(),
+        },
         body: JSON.stringify({ key }),
       });
       const data = await res.json();
@@ -61,9 +68,26 @@ export default function TmdbSearch() {
   }
 
   async function removeKey() {
-    await fetch("/api/tmdb/key", { method: "DELETE" });
-    setConfigured(false);
-    setKeySaved(false);
+    const token =
+      adminToken.trim() || window.prompt("Токен администратора (ADMIN_TOKEN)")?.trim();
+    if (!token) return;
+    setKeyError(null);
+    try {
+      const res = await fetch("/api/tmdb/key", {
+        method: "DELETE",
+        headers: { "x-admin-token": token },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setKeyError(data.error ?? "Не удалось удалить ключ");
+        return;
+      }
+      setAdminToken(token);
+      setConfigured(false);
+      setKeySaved(false);
+    } catch {
+      setKeyError("Ошибка сети — попробуйте ещё раз");
+    }
   }
 
   async function doSearch(e?: React.FormEvent) {
@@ -148,26 +172,44 @@ export default function TmdbSearch() {
             </li>
           </ol>
 
-          <form onSubmit={saveKey} className="mt-4 flex flex-col gap-2 sm:flex-row">
-            <input
-              type="password"
-              value={keyInput}
-              onChange={(e) => setKeyInput(e.target.value)}
-              placeholder="Вставьте ключ TMDB (v3 key или v4 token)…"
-              className="flex-1 rounded-xl border border-sky-300/30 bg-white/10 px-4 py-2.5 text-sm text-white placeholder-sky-300/50 outline-none focus:border-sky-300/70"
-              autoComplete="off"
-            />
-            <button
-              type="submit"
-              disabled={keySaving || keyInput.trim().length < 10}
-              className="rounded-xl bg-sky-500 px-6 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:opacity-50"
-            >
-              {keySaving ? "Проверяем…" : "Сохранить ключ"}
-            </button>
-          </form>
+          {canManage ? (
+            <form onSubmit={saveKey} className="mt-4 flex flex-col gap-2 sm:flex-row">
+              <input
+                type="password"
+                value={keyInput}
+                onChange={(e) => setKeyInput(e.target.value)}
+                placeholder="Вставьте ключ TMDB (v3 key или v4 token)…"
+                className="flex-1 rounded-xl border border-sky-300/30 bg-white/10 px-4 py-2.5 text-sm text-white placeholder-sky-300/50 outline-none focus:border-sky-300/70"
+                autoComplete="off"
+              />
+              <input
+                type="password"
+                value={adminToken}
+                onChange={(e) => setAdminToken(e.target.value)}
+                placeholder="Токен администратора"
+                className="rounded-xl border border-sky-300/30 bg-white/10 px-4 py-2.5 text-sm text-white placeholder-sky-300/50 outline-none focus:border-sky-300/70 sm:w-52"
+                autoComplete="off"
+              />
+              <button
+                type="submit"
+                disabled={keySaving || keyInput.trim().length < 10 || !adminToken.trim()}
+                className="rounded-xl bg-sky-500 px-6 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:opacity-50"
+              >
+                {keySaving ? "Проверяем…" : "Сохранить ключ"}
+              </button>
+            </form>
+          ) : (
+            <div className="mt-4 rounded-xl border border-sky-300/20 bg-white/5 px-4 py-3 text-xs text-sky-200/90">
+              Сохранение ключа через интерфейс отключено. Задайте на сервере переменную{" "}
+              <code className="rounded bg-white/10 px-1 py-0.5">TMDB_API_KEY</code> — либо{" "}
+              <code className="rounded bg-white/10 px-1 py-0.5">ADMIN_TOKEN</code>, чтобы
+              вводить ключ здесь.
+            </div>
+          )}
           {keyError && <div className="mt-2 text-xs text-red-300">{keyError}</div>}
           <div className="mt-3 text-xs text-sky-300/70">
-            Ключ проверяется запросом к TMDB и хранится в базе данных приложения.
+            Ключ проверяется запросом к TMDB и хранится в базе данных приложения; для
+            сохранения нужен токен администратора (<code className="rounded bg-white/10 px-1 py-0.5">ADMIN_TOKEN</code>).
             Альтернатива — переменные окружения <code className="rounded bg-white/10 px-1 py-0.5">TMDB_API_KEY</code> /{" "}
             <code className="rounded bg-white/10 px-1 py-0.5">TMDB_ACCESS_TOKEN</code>. Пока ключа нет, работает поиск через{" "}
             <a href="/imdb" className="underline">
@@ -187,12 +229,15 @@ export default function TmdbSearch() {
       {configured === true && !fromEnv && !keySaved && (
         <div className="mb-5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-xs text-slate-400">
           <span>🔑 Используется ключ TMDB, сохранённый через интерфейс</span>
-          <button
-            onClick={removeKey}
-            className="rounded-lg border border-white/15 px-3 py-1 transition hover:border-red-400/50 hover:text-red-300"
-          >
-            Удалить ключ
-          </button>
+          {canManage && (
+            <button
+              onClick={removeKey}
+              className="rounded-lg border border-white/15 px-3 py-1 transition hover:border-red-400/50 hover:text-red-300"
+            >
+              Удалить ключ
+            </button>
+          )}
+          {keyError && <span className="w-full text-red-300">{keyError}</span>}
         </div>
       )}
 

@@ -4,37 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { ImdbAwardsPayload, ImdbNomination, ImdbSearchResult } from "@/lib/imdb";
 import { imdbTypeLabel } from "@/lib/imdb";
+import { groupImdbNominations } from "@/lib/imdb-group";
 import ImdbGallery from "./ImdbGallery";
 
 type Phase = "idle" | "searching" | "picked" | "loading" | "done" | "error";
-
-interface Group {
-  eventId: string;
-  eventName: string;
-  year?: number;
-  items: ImdbNomination[];
-}
-
-function groupNoms(noms: ImdbNomination[]): Group[] {
-  const groups: Group[] = [];
-  for (const n of noms) {
-    let g = groups.find((x) => x.eventId === n.eventId && x.year === n.year);
-    if (!g) {
-      g = { eventId: n.eventId, eventName: n.eventName, year: n.year, items: [] };
-      groups.push(g);
-    }
-    g.items.push(n);
-  }
-  for (const g of groups) {
-    g.items.sort((a, b) => Number(b.isWinner) - Number(a.isWinner));
-  }
-  groups.sort(
-    (a, b) =>
-      b.items.filter((i) => i.isWinner).length -
-        a.items.filter((i) => i.isWinner).length || b.items.length - a.items.length,
-  );
-  return groups;
-}
 
 export default function ImdbSearch() {
   const router = useRouter();
@@ -51,14 +24,11 @@ export default function ImdbSearch() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const loadedIdRef = useRef<string | null>(null);
 
-  // load awards when ?id= is present
-  useEffect(() => {
-    if (!urlId || loadedIdRef.current === urlId) return;
-    loadedIdRef.current = urlId;
+  function loadAwards(id: string, refresh = false) {
     setPhase("loading");
     setError(null);
     setPayload(null);
-    fetch(`/api/imdb/awards?id=${urlId}`)
+    fetch(`/api/imdb/awards?id=${id}${refresh ? "&refresh=1" : ""}`)
       .then(async (res) => {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error ?? "Ошибка загрузки");
@@ -69,6 +39,13 @@ export default function ImdbSearch() {
         setError(e instanceof Error ? e.message : "Ошибка");
         setPhase("error");
       });
+  }
+
+  // load awards when ?id= is present
+  useEffect(() => {
+    if (!urlId || loadedIdRef.current === urlId) return;
+    loadedIdRef.current = urlId;
+    loadAwards(urlId);
   }, [urlId]);
 
   async function doSearch(e?: React.FormEvent) {
@@ -108,7 +85,7 @@ export default function ImdbSearch() {
       n.nominees.some((p) => p.name.toLowerCase().includes(q))
     );
   });
-  const groups = groupNoms(filtered);
+  const groups = groupImdbNominations(filtered);
   const winsCount = noms.filter((n) => n.isWinner).length;
 
   return (
@@ -191,6 +168,20 @@ export default function ImdbSearch() {
       {/* awards view */}
       {phase === "done" && payload && (
         <div className="mt-8">
+          {payload.partial && (
+            <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-amber-400/30 bg-amber-500/10 px-5 py-3 text-sm text-amber-200">
+              <span className="min-w-0 flex-1">
+                ⚠ Данные неполные: IMDb API ограничил запросы, загружено {noms.length} из{" "}
+                {payload.stats.nominationCount} номинаций.
+              </span>
+              <button
+                onClick={() => loadAwards(payload.title.id, true)}
+                className="rounded-lg border border-amber-300/40 px-3 py-1 hover:bg-amber-500/20"
+              >
+                Дозагрузить
+              </button>
+            </div>
+          )}
           {/* title card */}
           <div className="flex flex-wrap items-start gap-5 rounded-2xl border border-white/10 bg-white/5 p-5">
             {payload.title.imageUrl && (
@@ -272,7 +263,7 @@ export default function ImdbSearch() {
               </div>
               <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-center">
                 <div className="text-2xl font-bold text-white">
-                  {groupNoms(noms).length}
+                  {groupImdbNominations(noms).length}
                 </div>
                 <div className="text-xs uppercase tracking-wider text-slate-500">
                   Событий

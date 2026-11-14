@@ -3,6 +3,7 @@ import type { Entry, ReportPayload } from "./types";
 import type { FilmMatch } from "./search-service";
 import type { ImdbAwardsPayload, ImdbNomination } from "./imdb";
 import { entryFilms, entryNominee, reportStats } from "./format";
+import { groupImdbNominations } from "./imdb-group";
 
 /* ---------- palette ---------- */
 const C = {
@@ -736,35 +737,6 @@ export function buildFilmMarkdown(
 /*                    IMDb awards export                        */
 /* =========================================================== */
 
-interface ImdbGroup {
-  eventId: string;
-  eventName: string;
-  year?: number;
-  items: ImdbNomination[];
-}
-
-function groupImdb(nominations: ImdbNomination[]): ImdbGroup[] {
-  const groups: ImdbGroup[] = [];
-  for (const n of nominations) {
-    let g = groups.find((x) => x.eventId === n.eventId && x.year === n.year);
-    if (!g) {
-      g = { eventId: n.eventId, eventName: n.eventName, year: n.year, items: [] };
-      groups.push(g);
-    }
-    g.items.push(n);
-  }
-  for (const g of groups) {
-    g.items.sort((a, b) => Number(b.isWinner) - Number(a.isWinner));
-  }
-  groups.sort(
-    (a, b) =>
-      (b.items.filter((i) => i.isWinner).length -
-        a.items.filter((i) => i.isWinner).length) ||
-      b.items.length - a.items.length,
-  );
-  return groups;
-}
-
 function imdbEventUrl(g: { eventId: string; year?: number }): string | undefined {
   if (!g.eventId) return undefined;
   return `https://www.imdb.com/event/${g.eventId}/${g.year ?? ""}`;
@@ -777,7 +749,7 @@ export async function buildImdbWorkbook(payload: ImdbAwardsPayload): Promise<Buf
 
   const { title, stats, nominations } = payload;
   const wins = nominations.filter((n) => n.isWinner);
-  const groups = groupImdb(nominations);
+  const groups = groupImdbNominations(nominations);
   const titleText = `🎬 ${title.title}${title.year ? ` (${title.year})` : ""} — IMDb awards`;
   const subtitle = `imdb.com/title/${title.id}/awards · Побед: ${stats.winCount} · Номинаций: ${stats.nominationCount} · Событий: ${groups.length} · Сформировано: ${new Date().toLocaleDateString("ru-RU")}`;
 
@@ -963,7 +935,7 @@ function tgPersonTag(name: string): string {
 export function buildImdbMarkdown(payload: ImdbAwardsPayload): string {
   const { title, stats, nominations } = payload;
   const wins = nominations.filter((n) => n.isWinner);
-  const groups = groupImdb(nominations);
+  const groups = groupImdbNominations(nominations);
   const esc = (s: string) => s.replace(/\|/g, "\\|");
   const lines: string[] = [];
 
