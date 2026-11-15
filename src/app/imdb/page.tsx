@@ -7,6 +7,8 @@ export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Поиск наград фильма на IMDb",
+  description: "Найдите фильм и получите все победы и номинации по данным IMDb.",
+  alternates: { canonical: "/imdb" },
 };
 
 export default function ImdbPage() {

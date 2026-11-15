@@ -157,7 +157,9 @@ export default function PersonView() {
           </div>
 
           <div className="sticky top-0 z-10 -mx-4 mt-5 border-b border-white/10 bg-slate-950/90 px-4 py-3 backdrop-blur">
+            <label htmlFor="person-filmography-filter" className="sr-only">Фильтр фильмографии</label>
             <input
+              id="person-filmography-filter"
               type="search"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}

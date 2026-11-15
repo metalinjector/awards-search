@@ -115,7 +115,9 @@ export default function ImdbSearch() {
     <div>
       {/* search form */}
       <form onSubmit={doSearch} className="flex flex-col gap-3 sm:flex-row">
+        <label htmlFor="imdb-title-search" className="sr-only">Название фильма для поиска на IMDb</label>
         <input
+          id="imdb-title-search"
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -132,7 +134,7 @@ export default function ImdbSearch() {
       </form>
 
       {error && (
-        <div className="mt-4 rounded-xl border border-red-400/30 bg-red-500/10 px-5 py-4 text-red-300">
+        <div role="alert" className="mt-4 rounded-xl border border-red-400/30 bg-red-500/10 px-5 py-4 text-red-300">
           {error}
         </div>
       )}
@@ -181,7 +183,7 @@ export default function ImdbSearch() {
 
       {/* loading awards */}
       {phase === "loading" && (
-        <div className="mt-6 flex items-center gap-3 rounded-2xl border border-yellow-200/20 bg-yellow-500/10 px-5 py-5 text-yellow-200">
+        <div role="status" aria-live="polite" className="mt-6 flex items-center gap-3 rounded-2xl border border-yellow-200/20 bg-yellow-500/10 px-5 py-5 text-yellow-200">
           <span className="inline-block h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-yellow-300 border-t-transparent" />
           Загружаем карточку и все награды с IMDb — большие списки обрабатываются
           страница за страницей…
@@ -197,6 +199,7 @@ export default function ImdbSearch() {
               <ImdbGallery
                 imdbId={payload.title.id}
                 posterUrl={payload.title.imageUrl}
+                title={payload.title.title}
               />
             )}
             <div className="min-w-0 flex-1">
@@ -284,7 +287,9 @@ export default function ImdbSearch() {
           {/* filters */}
           <div className="sticky top-0 z-10 -mx-4 mt-5 border-b border-white/10 bg-slate-950/90 px-4 py-3 backdrop-blur">
             <div className="flex flex-wrap items-center gap-3">
+              <label htmlFor="imdb-awards-filter" className="sr-only">Фильтр наград IMDb</label>
               <input
+                id="imdb-awards-filter"
                 type="search"
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}

@@ -11,6 +11,10 @@ FROM base AS deps
 COPY package.json package-lock.json* ./
 RUN npm ci
 
+FROM base AS prod-deps
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev
+
 # ---------- Сборка ----------
 FROM base AS builder
 COPY --from=deps /app/node_modules ./node_modules
@@ -24,15 +28,18 @@ FROM base AS runner
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# Копируем всё необходимое для `next start` + drizzle-kit push
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=builder /app/.next ./.next
-COPY --from=builder /app/public ./public
-COPY package.json next.config.ts tsconfig.json drizzle.config.json ./
-COPY src/db ./src/db
-COPY src/lib ./src/lib
-COPY docker-entrypoint.sh ./
+# Непривилегированный runtime и только production-зависимости.
+RUN addgroup -S -g 1001 nodejs && adduser -S -u 1001 -G nodejs nextjs
+COPY --from=prod-deps --chown=nextjs:nodejs /app/node_modules ./node_modules
+COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+COPY --chown=nextjs:nodejs package.json next.config.ts tsconfig.json ./
+COPY --chown=nextjs:nodejs migrations ./migrations
+COPY --chown=nextjs:nodejs scripts/migrate.mjs ./scripts/migrate.mjs
+COPY --chown=nextjs:nodejs docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
+
+USER nextjs
 
 EXPOSE 3000
 ENTRYPOINT ["./docker-entrypoint.sh"]

@@ -7,6 +7,8 @@ import {
   type ImdbAwardsPayload,
   type ImdbPersonPayload,
 } from "./imdb";
+import { runExternalTask } from "./work-queue";
+import { observeOperation } from "./metrics";
 
 const TTL_MS = 1000 * 60 * 60 * 24; // 24h
 
@@ -27,7 +29,9 @@ export async function getImdbAwards(
   }
 
   try {
-    const payload = await fetchImdbAwards(imdbId);
+    const payload = await runExternalTask(`imdb-awards:${imdbId}`, () =>
+      observeOperation("imdb_awards", () => fetchImdbAwards(imdbId)),
+    );
     const now = new Date();
     await db
       .insert(imdbTitles)
@@ -73,7 +77,9 @@ export async function getImdbPerson(
   }
 
   try {
-    const payload = await fetchImdbPerson(nameId);
+    const payload = await runExternalTask(`imdb-person:${nameId}`, () =>
+      observeOperation("imdb_person", () => fetchImdbPerson(nameId)),
+    );
     await db
       .insert(imdbPersons)
       .values({ nameId, payload, fetchedAt: new Date() })

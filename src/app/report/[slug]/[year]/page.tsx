@@ -2,6 +2,9 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import ReportView from "@/components/ReportView";
 import { getOrCreateReport } from "@/lib/report-service";
+import { notFound } from "next/navigation";
+import { awardNameBySlug } from "@/lib/awards";
+import { AwardSourceError } from "@/lib/parser";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -12,15 +15,31 @@ interface Props {
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { slug, year } = await params;
-  return { title: `Отчёт: ${slug} ${year} — Кинонаграды` };
+  const awardName = awardNameBySlug.get(slug.toLowerCase()) ?? slug;
+  return {
+    title: `${awardName} ${year}: победители и номинанты`,
+    description: `Все категории, победители и номинанты премии ${awardName} ${year} с поиском и экспортом.`,
+    alternates: { canonical: `/report/${slug.toLowerCase()}/${year}` },
+    openGraph: {
+      title: `${awardName} ${year}: победители и номинанты`,
+      type: "article",
+      url: `/report/${slug.toLowerCase()}/${year}`,
+    },
+  };
 }
 
 export default async function ReportPage({ params }: Props) {
   const { slug, year: yearStr } = await params;
-  const year = parseInt(yearStr, 10);
+  const year = /^\d{4}$/.test(yearStr) ? Number(yearStr) : Number.NaN;
 
-  if (!/^[a-z0-9_\-]+$/i.test(slug) || !Number.isFinite(year)) {
-    return <ErrorScreen message="Некорректный адрес отчёта." />;
+  if (
+    !/^[a-z0-9_\-]+$/i.test(slug) ||
+    !Number.isFinite(year) ||
+    year < 1900 ||
+    year > new Date().getFullYear() ||
+    !awardNameBySlug.has(slug.toLowerCase())
+  ) {
+    notFound();
   }
 
   let data: Awaited<ReturnType<typeof getOrCreateReport>> | null = null;
@@ -28,7 +47,9 @@ export default async function ReportPage({ params }: Props) {
   try {
     data = await getOrCreateReport(slug.toLowerCase(), year);
   } catch (err) {
-    if (err instanceof Error) errorMessage = err.message;
+    if (err instanceof AwardSourceError && err.code === "not_found") notFound();
+    if (err instanceof AwardSourceError) errorMessage = err.message;
+    else throw err;
   }
 
   if (!data) {
@@ -39,6 +60,7 @@ export default async function ReportPage({ params }: Props) {
       payload={data.payload}
       slug={slug.toLowerCase()}
       fetchedAt={data.fetchedAt.toISOString()}
+      isStale={data.isStale}
     />
   );
 }

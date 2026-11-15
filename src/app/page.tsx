@@ -2,8 +2,13 @@ import Link from "next/link";
 import UrlForm from "@/components/UrlForm";
 import FilmSearchForm from "@/components/FilmSearchForm";
 import { listRecentReports } from "@/lib/report-service";
+import type { Metadata } from "next";
 
 export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = {
+  alternates: { canonical: "/" },
+};
 
 export default async function HomePage() {
   let recent: Awaited<ReturnType<typeof listRecentReports>> = [];
@@ -72,9 +77,9 @@ export default async function HomePage() {
               🎞️ Найти все награды фильма
             </h2>
             <p className="mt-1 text-sm text-slate-400">
-              Введите название фильма и год его выпуска — сервис просканирует все 24 премии
-              Кинопоиска за 3 года (год фильма и два следующих) и покажет все номинации,
-              отдельно выделив победы.
+              Введите название фильма и год его выпуска — сервис проверит все 24 премии
+              Кинопоиска за год фильма и до двух следующих, не включая будущие годы, и
+              отдельно выделит победы.
             </p>
             <div className="mt-4">
               <FilmSearchForm />
@@ -82,50 +87,35 @@ export default async function HomePage() {
           </div>
         </div>
 
-        <Link
-          href="/imdb"
-          className="group mt-6 block rounded-2xl border border-yellow-400/20 bg-gradient-to-r from-yellow-500/10 to-transparent p-6 backdrop-blur transition hover:border-yellow-400/50"
-        >
+        <div className="mt-6 rounded-2xl border border-yellow-400/20 bg-gradient-to-r from-yellow-500/10 via-transparent to-teal-500/10 p-6 backdrop-blur">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
+            <div className="max-w-2xl">
               <h2 className="flex flex-wrap items-center gap-2.5 text-lg font-semibold text-white">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src="/logos/imdb.svg" alt="IMDb" className="h-6 w-auto" />
-                Все награды фильма по данным IMDb
+                Найти фильм и все его награды
               </h2>
               <p className="mt-1 text-sm text-slate-400">
-                Мировая база: сотни событий и номинаций по каждому фильму. Найдите фильм,
-                выберите из вариантов — получите полный отчёт с актёрами и режиссёрами, с
-                выгрузкой в XLSX и Markdown.
+                IMDb хранит мировую историю наград, а TMDB помогает найти нужный фильм по
+                русскому названию. Оба пути ведут к одному полному отчёту и экспортам.
               </p>
             </div>
-            <span className="rounded-xl bg-gradient-to-r from-yellow-400 to-amber-500 px-6 py-3 font-semibold text-slate-950 shadow-lg shadow-yellow-500/20 transition group-hover:brightness-110">
-              Открыть →
-            </span>
-          </div>
-        </Link>
-
-        <Link
-          href="/tmdb"
-          className="group mt-4 block rounded-2xl border border-teal-400/20 bg-gradient-to-r from-teal-500/10 to-transparent p-6 backdrop-blur transition hover:border-teal-400/50"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h2 className="flex flex-wrap items-center gap-2.5 text-lg font-semibold text-white">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src="/logos/tmdb.svg" alt="TMDB" className="h-4 w-auto" />
-                Поиск по базе The Movie Database
-              </h2>
-              <p className="mt-1 text-sm text-slate-400">
-                Ищите фильмы и сериалы по русским названиям через TMDB — сервис свяжет
-                выбор с IMDb и покажет полный отчёт о наградах.
-              </p>
+            <div className="flex flex-wrap gap-2">
+              <Link
+                href="/imdb"
+                className="rounded-xl bg-gradient-to-r from-yellow-400 to-amber-500 px-5 py-3 font-semibold text-slate-950 shadow-lg shadow-yellow-500/20 transition hover:brightness-110"
+              >
+                IMDb: все награды →
+              </Link>
+              <Link
+                href="/tmdb"
+                className="rounded-xl bg-gradient-to-r from-teal-400 to-sky-500 px-5 py-3 font-semibold text-slate-950 shadow-lg shadow-teal-500/20 transition hover:brightness-110"
+              >
+                Поиск на русском
+              </Link>
             </div>
-            <span className="rounded-xl bg-gradient-to-r from-teal-400 to-sky-500 px-6 py-3 font-semibold text-slate-950 shadow-lg shadow-teal-500/20 transition group-hover:brightness-110">
-              Открыть →
-            </span>
           </div>
-        </Link>
+        </div>
 
         <div className="mt-14 grid gap-4 sm:grid-cols-3">
           {[

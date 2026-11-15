@@ -1,133 +1,115 @@
-# 🐳 Развёртывание «Кинонаграды» в Docker
-
-Полная инструкция по запуску сервиса отчётов о кинонаградах (Кинопоиск + IMDb + TMDB)
-на любой машине с Docker.
-
-## Состав
-
-| Файл | Назначение |
-|---|---|
-| `Dockerfile` | Многослойная сборка образа приложения (Node 22 Alpine) |
-| `docker-compose.yml` | Оркестрация: PostgreSQL 16 + приложение |
-| `docker-entrypoint.sh` | Стартовый скрипт: ждёт БД → применяет схему → запускает Next.js |
-| `.dockerignore` | Исключения из контекста сборки |
+# Развёртывание в Docker
 
 ## Требования
 
-- Docker Engine 24+ и Docker Compose v2 (`docker compose version`)
-- ~2 ГБ свободного места (образ + база)
-- Доступ в интернет из контейнера (сервис обращается к kinopoisk.ru через
-  Jina Reader, api.graphql.imdb.com, v3.sg.media-imdb.com, themoviedb.org)
+- Docker Engine 24+ и Docker Compose v2;
+- внешняя Docker-сеть `web` для reverse proxy;
+- доступ контейнера к Jina Reader, IMDb и TMDB.
 
-## Быстрый старт
+## Первый запуск
 
 ```bash
-# 1. Клонируйте / скопируйте проект и перейдите в его корень
-cd <папка-проекта>
+docker network create web   # один раз, если сети ещё нет
+cp .env.example .env
+chmod 600 .env
+```
 
-# 2. Соберите и запустите
+Замените значения `POSTGRES_PASSWORD` и `ADMIN_TOKEN` на случайные, например
+результат `openssl rand -hex 32`, затем запустите:
+
+```bash
+docker compose config       # проверить итоговую конфигурацию
 docker compose up -d --build
-
-# 3. Откройте в браузере
-#    http://localhost:3000
+docker compose ps
 ```
 
-При первом запуске:
-1. Поднимается PostgreSQL с постоянным томом `pgdata`
-2. Приложение дожидается готовности БД (healthcheck + собственное ожидание)
-3. `drizzle-kit push` создаёт все таблицы (`reports`, `imdb_titles`, `scan_misses`)
-4. Стартует production-сборка Next.js на порту 3000
+Пароль БД не имеет небезопасного значения по умолчанию. `.env` исключён из Git и
+должен читаться только владельцем.
 
-## Переменные окружения
+## Что происходит при старте
 
-Задаются в `docker-compose.yml` (секция `app.environment`) или через `.env`-файл.
+1. PostgreSQL проходит healthcheck.
+2. Непривилегированный пользователь приложения ждёт доступности БД.
+3. `scripts/migrate.mjs` применяет новые SQL из `migrations/` транзакционно и
+   сохраняет SHA-256 в `app_migrations`. Изменённая после применения миграция
+   останавливает запуск.
+4. Next.js запускается, затем его `/api/health` проверяет Compose.
+5. Сервис `backup` создаёт ежедневный custom-format `pg_dump` в `./backups` и
+   удаляет копии старше срока хранения.
 
-| Переменная | Обязательна | Описание |
+Приложение и backup работают с read-only root filesystem, без Linux capabilities
+и с лимитами CPU, памяти и процессов. Приложение запускается не от root. База не
+публикует порт и доступна лишь во внутренней Docker-сети.
+
+## Настройки
+
+Смотрите `.env.example`. Основные значения:
+
+| Переменная | По умолчанию | Описание |
 |---|---|---|
-| `DATABASE_URL` | да (уже задана) | Строка подключения к PostgreSQL. В compose указывает на сервис `db` |
-| `TMDB_API_KEY` | нет | v3-ключ TMDB — включает поиск на странице `/tmdb`. Получить: themoviedb.org → Settings → API |
-| `TMDB_ACCESS_TOKEN` | нет | Альтернатива: v4 Read Access Token TMDB (достаточно одного из двух) |
-| `JINA_API_KEY` | нет | Ключ r.jina.ai — повышает лимиты загрузки страниц Кинопоиска |
-| `PORT` | нет | Порт приложения внутри контейнера (по умолчанию 3000) |
+| `POSTGRES_USER` | `awards` | Роль приложения и backup |
+| `POSTGRES_DB` | `awards` | Имя базы |
+| `POSTGRES_PASSWORD` | — | Обязательный уникальный пароль |
+| `ADMIN_TOKEN` | — | Bearer-токен admin API |
+| `NEXT_PUBLIC_APP_URL` | production URL | Канонический origin |
+| `BACKUP_INTERVAL_SECONDS` | `86400` | Интервал резервирования |
+| `BACKUP_RETENTION_DAYS` | `14` | Срок хранения дампов |
 
-Пример подключения ключей — раскомментируйте строки в `docker-compose.yml`:
+Ключи TMDB и Jina опциональны. TMDB при отсутствии ключа честно показывает, что
+интеграция отключена; пользовательский ввод глобального ключа запрещён.
 
-```yaml
-    environment:
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/app_db
-      TMDB_API_KEY: "abc123..."
-```
-
-## Полезные команды
+## Эксплуатация
 
 ```bash
-docker compose up -d --build      # сборка + запуск в фоне
-docker compose logs -f app        # логи приложения
-docker compose logs -f db         # логи PostgreSQL
-docker compose ps                 # статус контейнеров
-docker compose restart app        # перезапуск приложения
-docker compose down               # остановка (данные БД сохраняются)
-docker compose down -v            # остановка + УДАЛЕНИЕ данных БД
+docker compose ps
+docker compose logs -f app
+docker compose logs -f db
+docker compose logs -f backup
+docker compose up -d --build       # обновление
+docker compose restart app
 ```
 
-### Доступ к базе данных
+Проверки:
 
 ```bash
-# psql внутри контейнера
-docker compose exec db psql -U postgres -d app_db
-
-# Примеры запросов
-#   \dt                                 -- список таблиц
-#   select award_slug, year from reports;
-#   select imdb_id from imdb_titles;
+curl -fsS https://awards.example/api/health
+curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" \
+  https://awards.example/api/metrics
 ```
 
-Чтобы подключаться с хоста (DBeaver, pgAdmin), раскомментируйте `ports: - "5432:5432"`
-у сервиса `db` и перезапустите compose.
+Логи приложения — по одной JSON-записи на событие; токены, пароли и ключи
+редактируются перед выводом.
 
-## Обновление приложения
+## Резервные копии
+
+Дампы лежат в `./backups/awards-<UTC timestamp>.dump`. Проверьте их наличие и
+периодически тестируйте восстановление в отдельную базу.
+
+Ручной дамп:
 
 ```bash
-git pull                          # или скопируйте новую версию кода
-docker compose up -d --build      # пересборка изменённых слоёв
+docker compose exec -T db pg_dump -U "$POSTGRES_USER" \
+  --format=custom "$POSTGRES_DB" > awards-manual.dump
 ```
 
-Слой `npm ci` кэшируется — пересборка без изменения зависимостей занимает ~1 минуту.
-
-## Резервное копирование БД
+Восстановление выполняйте только в пустую тестовую базу до проверки содержимого:
 
 ```bash
-# Дамп
-docker compose exec db pg_dump -U postgres app_db > backup.sql
-
-# Восстановление
-cat backup.sql | docker compose exec -T db psql -U postgres -d app_db
+docker compose exec -T db createdb -U "$POSTGRES_USER" awards_restore_test
+docker compose exec -T db pg_restore -U "$POSTGRES_USER" \
+  -d awards_restore_test --clean --if-exists /path/in/container.dump
 ```
 
-## Архитектура образа
+`docker compose down -v` удаляет весь том PostgreSQL и не используется для
+обычного обновления.
 
-```
-┌─────────────── этап deps ───────────────┐
-│ npm ci → полный node_modules            │
-└──────────────────┬──────────────────────┘
-                   ▼
-┌────────────── этап builder ─────────────┐
-│ next build → .next (production)         │
-└──────────────────┬──────────────────────┘
-                   ▼
-┌────────────── этап runner ──────────────┐
-│ node_modules + .next + public +         │
-│ src/db (схема для drizzle-kit push)     │
-│ ENTRYPOINT: docker-entrypoint.sh        │
-└─────────────────────────────────────────┘
-```
+## Обновление существующего инстанса
 
-## Устранение неполадок
+- Сначала создайте проверенный дамп.
+- Убедитесь, что роль из `.env` имеет `CONNECT`, `USAGE/CREATE` на схему, DML на
+  существующие таблицы и права на последовательности.
+- Запустите `docker compose up -d --build` и дождитесь `healthy`.
+- Проверьте `/api/health`, главную, один сохранённый отчёт и логи миграций.
 
-| Симптом | Решение |
-|---|---|
-| `PostgreSQL не отвечает после 60 попыток` | Проверьте `docker compose logs db`; убедитесь, что том не повреждён (`docker compose down -v` — сотрёт данные!) |
-| Порт 3000 занят | Измените проброс в compose: `"8080:3000"` → http://localhost:8080 |
-| Отчёты Кинопоиска не строятся | Из контейнера должен быть доступен `r.jina.ai`; проверьте: `docker compose exec app wget -qO- https://r.jina.ai` |
-| `/tmdb` просит ключ | Добавьте `TMDB_API_KEY` в environment и `docker compose up -d` |
-| Медленная первая сборка | Нормально: `npm ci` ставит ~500 пакетов. Дальше работает кэш |
+Для отката оставьте предыдущий image tag. SQL-миграции проектируются только
+вперёд; откат данных выполняется из проверенного дампа.

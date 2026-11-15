@@ -15,7 +15,8 @@ export default function GlobalError({
         <div className="text-4xl">🎬</div>
         <h1 className="mt-4 text-xl font-semibold">Что-то пошло не так</h1>
         <p className="mt-2 text-sm text-slate-400">
-          {error.message || "Непредвиденная ошибка. Попробуйте ещё раз."}
+          Непредвиденная ошибка. Попробуйте ещё раз.
+          {error.digest && <span className="mt-1 block text-xs">Код: {error.digest}</span>}
         </p>
         <div className="mt-6 flex justify-center gap-3">
           <button

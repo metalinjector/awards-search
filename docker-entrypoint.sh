@@ -17,8 +17,8 @@ c.connect().then(() => c.end()).then(() => process.exit(0)).catch(() => process.
 done
 echo "==> PostgreSQL готов."
 
-echo "==> Применение схемы БД (drizzle-kit push)..."
-npx drizzle-kit push
+echo "==> Применение версионированных миграций БД..."
+node scripts/migrate.mjs
 
 echo "==> Запуск Next.js..."
-exec npx next start -p "${PORT:-3000}"
+exec node node_modules/next/dist/bin/next start -p "${PORT:-3000}"

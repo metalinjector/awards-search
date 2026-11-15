@@ -22,9 +22,10 @@ interface Props {
   payload: ReportPayload;
   slug: string;
   fetchedAt: string;
+  isStale: boolean;
 }
 
-export default function ReportView({ payload, slug, fetchedAt }: Props) {
+export default function ReportView({ payload, slug, fetchedAt, isStale }: Props) {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("categories");
   const [query, setQuery] = useState("");
@@ -34,6 +35,7 @@ export default function ReportView({ payload, slug, fetchedAt }: Props) {
   const [lbSortKey, setLbSortKey] = useState<LbSortKey>("rank");
   const [lbSortAsc, setLbSortAsc] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   const stats = useMemo(() => reportStats(payload), [payload]);
 
@@ -138,13 +140,20 @@ export default function ReportView({ payload, slug, fetchedAt }: Props) {
 
   async function refresh() {
     setRefreshing(true);
+    setRefreshError(null);
     try {
-      await fetch("/api/report", {
+      const response = await fetch("/api/report", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: payload.sourceUrl, refresh: true }),
       });
+      if (!response.ok) {
+        const data = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(data?.error ?? "Не удалось обновить отчёт");
+      }
       router.refresh();
+    } catch (error) {
+      setRefreshError(error instanceof Error ? error.message : "Не удалось обновить отчёт");
     } finally {
       setRefreshing(false);
     }
@@ -201,6 +210,16 @@ export default function ReportView({ payload, slug, fetchedAt }: Props) {
                 {refreshing ? "обновляем…" : "обновить"}
               </button>
             </div>
+            {isStale && (
+              <p role="status" className="mt-2 text-xs text-amber-300">
+                Показана сохранённая версия; свежие данные уже обновляются в фоне.
+              </p>
+            )}
+            {refreshError && (
+              <p role="alert" className="mt-2 text-xs text-red-300">
+                {refreshError}
+              </p>
+            )}
           </div>
 
           <div className="flex gap-2">
@@ -274,7 +293,9 @@ export default function ReportView({ payload, slug, fetchedAt }: Props) {
 
             {tab !== "leaderboard" && (
               <>
+                <label htmlFor="report-filter" className="sr-only">Поиск по отчёту</label>
                 <input
+                  id="report-filter"
                   type="search"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}

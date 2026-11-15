@@ -8,7 +8,7 @@ interface PlanPage {
   slug: string;
   awardName: string;
   year: number;
-  status: "cached" | "missing" | "pending";
+  status: "cached" | "stale" | "missing" | "pending";
 }
 
 interface FilmMatch {
@@ -27,9 +27,11 @@ const CONCURRENCY = 3;
 export default function FilmSearch({
   initialQuery,
   initialYear,
+  kpId,
 }: {
   initialQuery: string;
   initialYear: number;
+  kpId?: string;
 }) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -37,19 +39,30 @@ export default function FilmSearch({
   const [currentPages, setCurrentPages] = useState<string[]>([]);
   const [matches, setMatches] = useState<FilmMatch[]>([]);
   const [missingCount, setMissingCount] = useState(0);
+  const [failedPages, setFailedPages] = useState<string[]>([]);
+  const [coverage, setCoverage] = useState({ scanned: 0, planned: 0 });
+  const [yearsLabel, setYearsLabel] = useState(String(initialYear));
   const startedRef = useRef(false);
 
   const run = useCallback(async () => {
     setPhase("planning");
     setError(null);
     setMatches([]);
+    setMissingCount(0);
+    setFailedPages([]);
     try {
       // 1) plan
       const planRes = await fetch(`/api/search/plan?year=${initialYear}`);
       const planData = await planRes.json();
       if (!planRes.ok) throw new Error(planData.error ?? "Ошибка плана сканирования");
       const plan: PlanPage[] = planData.plan;
-      const pending = plan.filter((p) => p.status === "pending");
+      const pending = plan.filter((p) => p.status === "pending" || p.status === "stale");
+      const years = [...new Set(plan.map((p) => p.year))];
+      setYearsLabel(
+        years.length > 1
+          ? `${years[0]}–${years[years.length - 1]}`
+          : String(years[0] ?? initialYear),
+      );
       setMissingCount(plan.filter((p) => p.status === "missing").length);
 
       // 2) scan pending pages with limited concurrency
@@ -70,14 +83,21 @@ export default function FilmSearch({
               const res = await fetch("/api/search/scan", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ slug: page.slug, year: page.year }),
+                body: JSON.stringify({
+                  slug: page.slug,
+                  year: page.year,
+                  refresh: page.status === "stale",
+                }),
               });
               const data = await res.json().catch(() => ({}));
+              if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
               if (data.status === "missing") {
                 setMissingCount((c) => c + 1);
+              } else if (data.status === "error") {
+                setFailedPages((items) => [...items, label]);
               }
             } catch {
-              // network hiccup — skip, will be retried next search
+              setFailedPages((items) => [...items, label]);
             }
             active.delete(label);
             done += 1;
@@ -93,17 +113,23 @@ export default function FilmSearch({
       // 3) search
       setPhase("searching");
       const res = await fetch(
-        `/api/search/results?q=${encodeURIComponent(initialQuery)}&year=${initialYear}`,
+        `/api/search/results?q=${encodeURIComponent(initialQuery)}&year=${initialYear}` +
+          (kpId ? `&kpId=${encodeURIComponent(kpId)}` : ""),
       );
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Ошибка поиска");
       setMatches(data.matches);
+      setCoverage({ scanned: data.scannedPages, planned: data.plannedPages });
       setPhase("done");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Что-то пошло не так");
       setPhase("error");
     }
-  }, [initialQuery, initialYear]);
+  }, [initialQuery, initialYear, kpId]);
+
+  const exportParams =
+    `q=${encodeURIComponent(initialQuery)}&year=${initialYear}` +
+    (kpId ? `&kpId=${encodeURIComponent(kpId)}` : "");
 
   useEffect(() => {
     if (startedRef.current) return;
@@ -133,13 +159,13 @@ export default function FilmSearch({
     <div>
       {/* progress */}
       {(phase === "planning" || phase === "scanning" || phase === "searching") && (
-        <div className="rounded-2xl border border-amber-200/20 bg-amber-500/10 p-6">
+        <div role="status" aria-live="polite" className="rounded-2xl border border-amber-200/20 bg-amber-500/10 p-6">
           <div className="flex items-center gap-3 text-amber-200">
             <span className="inline-block h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-amber-300 border-t-transparent" />
             <span className="font-medium">
               {phase === "planning" && "Готовим план сканирования…"}
               {phase === "scanning" &&
-                `Сканируем премии за ${initialYear}–${initialYear + 2} годы… (${progress.done} из ${progress.total})`}
+                `Сканируем премии за ${yearsLabel}… (${progress.done} из ${progress.total})`}
               {phase === "searching" && "Ищем фильм в собранных данных…"}
             </span>
           </div>
@@ -168,7 +194,7 @@ export default function FilmSearch({
       )}
 
       {phase === "error" && (
-        <div className="rounded-2xl border border-red-400/30 bg-red-500/10 p-6 text-red-300">
+        <div role="alert" className="rounded-2xl border border-red-400/30 bg-red-500/10 p-6 text-red-300">
           {error}
           <button
             onClick={() => void run()}
@@ -188,19 +214,19 @@ export default function FilmSearch({
                 Сохранить результаты:
               </span>
               <a
-                href={`/api/export/film/xlsx?q=${encodeURIComponent(initialQuery)}&year=${initialYear}`}
+                href={`/api/export/film/xlsx?${exportParams}`}
                 className="rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-600/20 transition hover:bg-emerald-500"
               >
                 ⬇ XLSX
               </a>
               <a
-                href={`/api/export/film/md?q=${encodeURIComponent(initialQuery)}&year=${initialYear}`}
+                href={`/api/export/film/md?${exportParams}`}
                 className="rounded-xl bg-slate-700 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-600"
               >
                 ⬇ Markdown
               </a>
               <a
-                href={`/api/export/film/html?q=${encodeURIComponent(initialQuery)}&year=${initialYear}`}
+                href={`/api/export/film/html?${exportParams}`}
                 className="rounded-xl bg-sky-700 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-600"
               >
                 ⬇ HTML
@@ -230,11 +256,20 @@ export default function FilmSearch({
             </div>
           </div>
 
+          <div className="mt-3 rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-xs text-slate-400">
+            Покрытие: актуально проверено {coverage.scanned} из {coverage.planned} страниц.
+            {failedPages.length > 0 && (
+              <span className="ml-1 text-red-300">
+                Ошибок: {failedPages.length}; эти страницы не считаются отсутствующими.
+              </span>
+            )}
+          </div>
+
           {matches.length === 0 && (
             <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 px-6 py-12 text-center text-slate-400">
               <div className="text-3xl">🔍</div>
               <div className="mt-3">
-                По запросу «{initialQuery}» в премиях {initialYear}–{initialYear + 2}{" "}
+                По запросу «{initialQuery}» в премиях за {yearsLabel}{" "}
                 годов ничего не найдено.
               </div>
               <div className="mt-2 text-sm text-slate-500">
@@ -340,6 +375,12 @@ export default function FilmSearch({
             <div className="mt-6 text-center text-xs text-slate-600">
               {missingCount} страниц премий за эти годы отсутствуют на Кинопоиске и были
               пропущены
+            </div>
+          )}
+          {failedPages.length > 0 && (
+            <div className="mt-2 text-center text-xs text-red-300/80">
+              Не удалось проверить: {failedPages.join(" · ")}. Повторный поиск попробует
+              их снова.
             </div>
           )}
         </div>

@@ -4,18 +4,22 @@ services:
     container_name: awards-db
     restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: app_db
+      POSTGRES_USER: ${POSTGRES_USER:-awards}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-awards}
     volumes:
       - pgdata:/var/lib/postgresql/data
     networks:
       - internal
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d app_db"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-awards} -d ${POSTGRES_DB:-awards}"]
       interval: 5s
       timeout: 3s
       retries: 12
+    mem_limit: 512m
+    pids_limit: 200
+    security_opt:
+      - no-new-privileges:true
 
   app:
     build: .
@@ -25,20 +29,69 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/app_db
+      DATABASE_URL: postgresql://${POSTGRES_USER:-awards}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-awards}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-https://awards.zonner.site}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
       # Необязательные ключи внешних сервисов:
-      # TMDB_API_KEY: "ваш_v3_ключ_tmdb"
-      # TMDB_ACCESS_TOKEN: "ваш_v4_токен_tmdb"
-      # JINA_API_KEY: "ваш_ключ_jina_reader"
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
+      TMDB_ACCESS_TOKEN: ${TMDB_ACCESS_TOKEN:-}
+      JINA_API_KEY: ${JINA_API_KEY:-}
     networks:
       - internal
       - web
     # Порт наружу не публикуем — доступ только через Caddy (awards.zonner.site).
     expose:
       - "3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    mem_limit: 1g
+    cpus: 1.5
+    pids_limit: 256
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  backup:
+    image: postgres:16-alpine
+    user: "70:70"
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGUSER: ${POSTGRES_USER:-awards}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      PGDATABASE: ${POSTGRES_DB:-awards}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    command: ["sh", "/scripts/backup-loop.sh"]
+    volumes:
+      - ./scripts/backup-loop.sh:/scripts/backup-loop.sh:ro
+      - ./backups:/backups
+    networks:
+      - internal
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    mem_limit: 256m
+    pids_limit: 100
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
 networks:
   internal:
+    internal: true
   web:
     external: true
 

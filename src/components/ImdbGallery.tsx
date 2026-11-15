@@ -2,12 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { GalleryImage } from "@/lib/imdb";
+import { useDialogFocus } from "./useDialogFocus";
 
 type Mode = "closed" | "poster" | "grid" | "viewer";
 
 interface Props {
   imdbId: string;
   posterUrl: string;
+  title?: string;
 }
 
 /** Downscaled Amazon media URL for grid thumbnails */
@@ -24,7 +26,7 @@ const TYPE_LABEL: Record<string, string> = {
   product: "продукт",
 };
 
-export default function ImdbGallery({ imdbId, posterUrl }: Props) {
+export default function ImdbGallery({ imdbId, posterUrl, title = "Фильм" }: Props) {
   const [mode, setMode] = useState<Mode>("closed");
   const [images, setImages] = useState<GalleryImage[]>([]);
   const [totalCount, setTotalCount] = useState<number | null>(null);
@@ -112,16 +114,13 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
     if (stateRef.current.images.length > ni) setViewerIndex(ni);
   }, [viewerIndex, ensureLoaded]);
 
-  // keyboard: Esc closes / steps back, arrows navigate the viewer
+  // Arrow keys navigate the viewer. Escape and focus trapping are handled by
+  // the shared dialog hook below.
   useEffect(() => {
-    if (mode === "closed") return;
+    if (mode !== "viewer") return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setMode(mode === "viewer" ? "grid" : "closed");
-      } else if (mode === "viewer") {
-        if (e.key === "ArrowLeft") viewerPrev();
-        if (e.key === "ArrowRight") viewerNext();
-      }
+      if (e.key === "ArrowLeft") viewerPrev();
+      if (e.key === "ArrowRight") viewerNext();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -139,6 +138,10 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
 
   const gridStep = (v: number, d: number) => Math.min(6, Math.max(2, v + d));
   const current = images[viewerIndex];
+  const closeDialog = useCallback(() => {
+    setMode((current) => (current === "viewer" ? "grid" : "closed"));
+  }, []);
+  const dialogRef = useDialogFocus<HTMLDivElement>(mode, closeDialog);
 
   return (
     <>
@@ -147,12 +150,13 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
         type="button"
         onClick={() => setMode("poster")}
         title="Увеличить постер"
+        aria-label={`Увеличить постер: ${title}`}
         className="group relative shrink-0 cursor-zoom-in"
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={posterUrl}
-          alt=""
+          alt={`Постер: ${title}`}
           referrerPolicy="no-referrer"
           className="h-40 w-28 rounded-lg object-cover shadow-lg transition group-hover:brightness-110"
         />
@@ -164,13 +168,18 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
       {/* ---------- enlarged poster ---------- */}
       {mode === "poster" && (
         <div
+          ref={dialogRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Увеличенный постер: ${title}`}
+          tabIndex={-1}
           className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/85 p-4 backdrop-blur-sm"
           onClick={() => setMode("closed")}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={posterUrl}
-            alt=""
+            alt={`Постер: ${title}`}
             referrerPolicy="no-referrer"
             onClick={(e) => e.stopPropagation()}
             className="max-h-[82vh] max-w-[92vw] rounded-xl object-contain shadow-2xl"
@@ -188,6 +197,7 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
             onClick={() => setMode("closed")}
             className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-lg text-white transition hover:bg-white/25"
             title="Закрыть (Esc)"
+            aria-label="Закрыть увеличенный постер"
           >
             ✕
           </button>
@@ -201,12 +211,17 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
           onClick={() => setMode("closed")}
         >
           <div
+            ref={dialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="imdb-gallery-title"
+            tabIndex={-1}
             onClick={(e) => e.stopPropagation()}
             className="flex max-h-full w-full max-w-5xl flex-col rounded-2xl border border-white/10 bg-slate-950/95 shadow-2xl"
           >
             {/* header */}
             <div className="flex flex-wrap items-center gap-3 border-b border-white/10 px-4 py-3">
-              <h3 className="text-sm font-semibold text-white">
+              <h3 id="imdb-gallery-title" className="text-sm font-semibold text-white">
                 Галерея{" "}
                 {totalCount !== null && (
                   <span className="font-normal text-slate-400">
@@ -219,6 +234,7 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
               <div className="flex items-center gap-1 rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-xs text-slate-300">
                 <span className="mr-1 text-slate-500">сетка</span>
                 <button
+                  aria-label="Уменьшить число колонок"
                   onClick={() => {
                     setCols((v) => gridStep(v, -1));
                     setPage(0);
@@ -229,6 +245,7 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
                 </button>
                 <span className="w-3 text-center font-semibold text-white">{cols}</span>
                 <button
+                  aria-label="Увеличить число колонок"
                   onClick={() => {
                     setCols((v) => gridStep(v, 1));
                     setPage(0);
@@ -239,6 +256,7 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
                 </button>
                 <span className="px-0.5 text-slate-500">×</span>
                 <button
+                  aria-label="Уменьшить число строк"
                   onClick={() => {
                     setRows((v) => gridStep(v, -1));
                     setPage(0);
@@ -249,6 +267,7 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
                 </button>
                 <span className="w-3 text-center font-semibold text-white">{rows}</span>
                 <button
+                  aria-label="Увеличить число строк"
                   onClick={() => {
                     setRows((v) => gridStep(v, 1));
                     setPage(0);
@@ -271,6 +290,7 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
                   onClick={() => setMode("closed")}
                   className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/25"
                   title="Закрыть (Esc)"
+                  aria-label="Закрыть галерею"
                 >
                   ✕
                 </button>
@@ -302,7 +322,7 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={thumb(img.url)}
-                          alt=""
+                          alt={`${TYPE_LABEL[img.type ?? ""] ?? "Изображение"}: ${title}`}
                           loading="lazy"
                           referrerPolicy="no-referrer"
                           className="h-full w-full object-cover transition group-hover:scale-105"
@@ -327,6 +347,7 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
             {/* pagination */}
             <div className="flex items-center justify-center gap-4 border-t border-white/10 px-4 py-3">
               <button
+                aria-label="Предыдущая страница галереи"
                 onClick={() => setPage((p) => Math.max(0, p - 1))}
                 disabled={page === 0}
                 className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/25 disabled:opacity-30"
@@ -337,6 +358,7 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
                 {page + 1} / {totalPages}
               </span>
               <button
+                aria-label="Следующая страница галереи"
                 onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
                 disabled={page + 1 >= totalPages}
                 className="flex h-8 w-8 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/25 disabled:opacity-30"
@@ -351,13 +373,18 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
       {/* ---------- single image viewer ---------- */}
       {mode === "viewer" && current && (
         <div
+          ref={dialogRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Изображение ${viewerIndex + 1} из галереи: ${title}`}
+          tabIndex={-1}
           className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/90 p-4 backdrop-blur-sm"
           onClick={() => setMode("grid")}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={current.url}
-            alt=""
+            alt={`${TYPE_LABEL[current.type ?? ""] ?? "Изображение"}: ${title}`}
             referrerPolicy="no-referrer"
             onClick={(e) => e.stopPropagation()}
             className="max-h-[82vh] max-w-[92vw] rounded-xl object-contain shadow-2xl"
@@ -389,6 +416,7 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
             disabled={viewerIndex === 0}
             className="absolute left-3 top-1/2 flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-2xl text-white transition hover:bg-white/25 disabled:opacity-20"
             title="Предыдущее (←)"
+            aria-label="Предыдущее изображение"
           >
             ‹
           </button>
@@ -400,6 +428,7 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
             disabled={totalCount !== null && viewerIndex + 1 >= totalCount}
             className="absolute right-3 top-1/2 flex h-12 w-12 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-2xl text-white transition hover:bg-white/25 disabled:opacity-20"
             title="Следующее (→)"
+            aria-label="Следующее изображение"
           >
             ›
           </button>
@@ -407,6 +436,7 @@ export default function ImdbGallery({ imdbId, posterUrl }: Props) {
             onClick={() => setMode("closed")}
             className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-lg text-white transition hover:bg-white/25"
             title="Закрыть (Esc)"
+            aria-label="Закрыть просмотр изображения"
           >
             ✕
           </button>

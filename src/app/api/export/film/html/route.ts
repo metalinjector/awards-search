@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { searchFilm } from "@/lib/search-service";
 import { buildFilmHtml } from "@/lib/html-export";
+import { enforceRateLimit } from "@/lib/api-security";
+import { parseYear } from "@/lib/validation";
 
 export const dynamic = "force-dynamic";
 
@@ -9,15 +11,21 @@ function sanitize(s: string): string {
 }
 
 export async function GET(req: NextRequest) {
+  const limited = enforceRateLimit(req, { name: "export_film", limit: 10, windowMs: 10 * 60_000 });
+  if (limited) return limited;
   const q = (req.nextUrl.searchParams.get("q") ?? "").trim();
-  const year = parseInt(req.nextUrl.searchParams.get("year") ?? "", 10);
-  if (q.length < 2 || !Number.isFinite(year) || year < 1900 || year > 2100) {
+  const kpId = (req.nextUrl.searchParams.get("kpId") ?? "").trim();
+  const year = parseYear(req.nextUrl.searchParams.get("year"));
+  if (q.length < 2 || year === null) {
     return NextResponse.json(
       { error: "Нужны параметры q (название) и year (год фильма)" },
       { status: 400 },
     );
   }
-  const { matches } = await searchFilm(q, year);
+  if (kpId && !/^\d{1,12}$/.test(kpId)) {
+    return NextResponse.json({ error: "Некорректный ID Кинопоиска" }, { status: 400 });
+  }
+  const { matches } = await searchFilm(q, year, kpId || undefined);
   const html = buildFilmHtml(q, year, matches);
   const filename = `${sanitize(q)}-${year}-awards.html`;
   return new NextResponse(html, {

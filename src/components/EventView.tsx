@@ -114,7 +114,9 @@ export default function EventView() {
 
           <div className="sticky top-0 z-10 -mx-4 mt-5 border-b border-white/10 bg-slate-950/90 px-4 py-3 backdrop-blur">
             <div className="flex flex-wrap items-center gap-3">
+              <label htmlFor="event-filter" className="sr-only">Фильтр номинантов церемонии</label>
               <input
+                id="event-filter"
                 type="search"
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}

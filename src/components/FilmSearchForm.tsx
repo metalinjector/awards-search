@@ -1,19 +1,23 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { KpSuggestItem } from "@/lib/kp-suggest";
+import { useDialogFocus } from "./useDialogFocus";
 
 export default function FilmSearchForm({
   defaultQuery = "",
   defaultYear,
+  defaultKpId = "",
 }: {
   defaultQuery?: string;
   defaultYear?: number;
+  defaultKpId?: string;
 }) {
   const router = useRouter();
   const [q, setQ] = useState(defaultQuery);
   const [year, setYear] = useState<string>(defaultYear ? String(defaultYear) : "");
+  const [kpId, setKpId] = useState(defaultKpId);
   const [error, setError] = useState<string | null>(null);
 
   // "Подобрать" modal state
@@ -35,7 +39,8 @@ export default function FilmSearchForm({
       return;
     }
     setError(null);
-    router.push(`/film?q=${encodeURIComponent(query)}&year=${y}`);
+    const idParam = /^\d{1,12}$/.test(kpId) ? `&kpId=${kpId}` : "";
+    router.push(`/film?q=${encodeURIComponent(query)}&year=${y}${idParam}`);
   }
 
   async function openPicker() {
@@ -68,27 +73,26 @@ export default function FilmSearchForm({
   function pick(item: KpSuggestItem) {
     setQ(item.title);
     if (item.year) setYear(String(item.year));
+    setKpId(item.kpId);
     setPickerOpen(false);
   }
 
-  // Esc closes the picker
-  useEffect(() => {
-    if (!pickerOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setPickerOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [pickerOpen]);
+  const closePicker = useCallback(() => setPickerOpen(false), []);
+  const dialogRef = useDialogFocus<HTMLDivElement>(pickerOpen, closePicker);
 
   return (
     <div>
       <form onSubmit={submit} className="flex flex-col gap-3 sm:flex-row">
         <div className="relative flex-1">
+          <label htmlFor="film-title" className="sr-only">Название фильма</label>
           <input
+            id="film-title"
             type="text"
             value={q}
-            onChange={(e) => setQ(e.target.value)}
+            onChange={(e) => {
+              setQ(e.target.value);
+              setKpId("");
+            }}
             placeholder="Название фильма, например: Грешники или Sinners"
             className="w-full rounded-xl border border-amber-200/20 bg-white/10 px-5 py-4 pr-14 text-base text-white placeholder-slate-400 outline-none backdrop-blur transition focus:border-amber-400/60 focus:bg-white/15"
           />
@@ -96,6 +100,7 @@ export default function FilmSearchForm({
             type="button"
             onClick={openPicker}
             title="Подобрать: найти фильм на Кинопоиске и подставить его год"
+            aria-label="Подобрать фильм на Кинопоиске и подставить год"
             className="absolute right-2 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-lg border border-amber-400/40 bg-amber-500/15 text-amber-300 transition hover:bg-amber-500/30 hover:text-amber-200"
           >
             {/* binoculars icon */}
@@ -104,15 +109,22 @@ export default function FilmSearchForm({
             </svg>
           </button>
         </div>
-        <input
-          type="number"
-          value={year}
-          onChange={(e) => setYear(e.target.value)}
-          placeholder="Год фильма"
-          min={1900}
-          max={2100}
-          className="w-full rounded-xl border border-amber-200/20 bg-white/10 px-5 py-4 text-base text-white placeholder-slate-400 outline-none backdrop-blur transition focus:border-amber-400/60 focus:bg-white/15 sm:w-40"
-        />
+        <div className="sm:w-40">
+          <label htmlFor="film-year" className="sr-only">Год выпуска фильма</label>
+          <input
+            id="film-year"
+            type="number"
+            value={year}
+            onChange={(e) => {
+              setYear(e.target.value);
+              setKpId("");
+            }}
+            placeholder="Год фильма"
+            min={1900}
+            max={2100}
+            className="w-full rounded-xl border border-amber-200/20 bg-white/10 px-5 py-4 text-base text-white placeholder-slate-400 outline-none backdrop-blur transition focus:border-amber-400/60 focus:bg-white/15"
+          />
+        </div>
         <button
           type="submit"
           className="rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 px-8 py-4 font-semibold text-slate-950 shadow-lg shadow-amber-500/25 transition hover:brightness-110"
@@ -121,7 +133,7 @@ export default function FilmSearchForm({
         </button>
       </form>
       {error && (
-        <div className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-5 py-3 text-sm text-red-300">
+        <div role="alert" className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-5 py-3 text-sm text-red-300">
           {error}
         </div>
       )}
@@ -130,14 +142,19 @@ export default function FilmSearchForm({
       {pickerOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-3 backdrop-blur-sm sm:p-6"
-          onClick={() => setPickerOpen(false)}
+          onClick={closePicker}
         >
           <div
+            ref={dialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="kp-picker-title"
+            tabIndex={-1}
             onClick={(e) => e.stopPropagation()}
             className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-2xl border border-white/10 bg-slate-950/95 shadow-2xl"
           >
             <div className="flex items-center gap-3 border-b border-white/10 px-5 py-3">
-              <h3 className="min-w-0 flex-1 truncate text-sm font-semibold text-white">
+              <h3 id="kp-picker-title" className="min-w-0 flex-1 truncate text-sm font-semibold text-white">
                 Кинопоиск: «{q.trim()}»
                 {!pickerLoading && suggestions.length > 0 && (
                   <span className="ml-2 font-normal text-slate-400">
@@ -146,7 +163,8 @@ export default function FilmSearchForm({
                 )}
               </h3>
               <button
-                onClick={() => setPickerOpen(false)}
+                onClick={closePicker}
+                aria-label="Закрыть окно подбора фильма"
                 className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-white/25"
                 title="Закрыть (Esc)"
               >
@@ -156,13 +174,13 @@ export default function FilmSearchForm({
 
             <div className="min-h-0 flex-1 overflow-y-auto p-3">
               {pickerLoading && (
-                <div className="flex items-center gap-3 rounded-xl border border-amber-200/20 bg-amber-500/10 px-5 py-5 text-sm text-amber-200">
+                <div role="status" aria-live="polite" className="flex items-center gap-3 rounded-xl border border-amber-200/20 bg-amber-500/10 px-5 py-5 text-sm text-amber-200">
                   <span className="inline-block h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-amber-300 border-t-transparent" />
                   Ищем на Кинопоиске — обычно 10–30 секунд…
                 </div>
               )}
               {pickerError && (
-                <div className="rounded-xl border border-red-400/30 bg-red-500/10 px-5 py-4 text-sm text-red-300">
+                <div role="alert" className="rounded-xl border border-red-400/30 bg-red-500/10 px-5 py-4 text-sm text-red-300">
                   {pickerError}
                   <button
                     onClick={openPicker}

@@ -6,6 +6,8 @@ export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Поиск наград через TMDB",
+  description: "Поиск фильма по русскому названию через TMDB с переходом к наградам IMDb.",
+  alternates: { canonical: "/tmdb" },
 };
 
 export default function TmdbPage() {

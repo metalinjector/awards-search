@@ -53,13 +53,17 @@ export default function UrlForm() {
         }}
         className="flex flex-col gap-3 sm:flex-row"
       >
+        <label htmlFor="award-url" className="sr-only">Ссылка на страницу премии Кинопоиска</label>
         <input
-          type="text"
+          id="award-url"
+          type="url"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           placeholder="https://www.kinopoisk.ru/awards/oscar/2026/"
           className="flex-1 rounded-xl border border-amber-200/20 bg-white/10 px-5 py-4 text-base text-white placeholder-slate-400 outline-none backdrop-blur transition focus:border-amber-400/60 focus:bg-white/15"
           disabled={loading}
+          aria-invalid={Boolean(error)}
+          aria-describedby={error ? "award-url-error" : undefined}
         />
         <button
           type="submit"
@@ -71,7 +75,7 @@ export default function UrlForm() {
       </form>
 
       {loading && (
-        <div className="mt-4 flex items-center gap-3 rounded-xl border border-amber-200/20 bg-amber-500/10 px-5 py-4 text-amber-200">
+        <div role="status" aria-live="polite" className="mt-4 flex items-center gap-3 rounded-xl border border-amber-200/20 bg-amber-500/10 px-5 py-4 text-amber-200">
           <span className="inline-block h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-amber-300 border-t-transparent" />
           <span>
             Забираем данные со страницы Кинопоиска и готовим отчёт — обычно 10–40 секунд…
@@ -80,7 +84,7 @@ export default function UrlForm() {
       )}
 
       {error && (
-        <div className="mt-4 rounded-xl border border-red-400/30 bg-red-500/10 px-5 py-4 text-red-300">
+        <div id="award-url-error" role="alert" className="mt-4 rounded-xl border border-red-400/30 bg-red-500/10 px-5 py-4 text-red-300">
           {error}
         </div>
       )}

@@ -16,6 +16,23 @@ export interface ParsedAwardUrl {
   canonicalUrl: string;
 }
 
+export type AwardSourceErrorCode =
+  | "not_found"
+  | "rate_limited"
+  | "timeout"
+  | "upstream"
+  | "parse";
+
+export class AwardSourceError extends Error {
+  constructor(
+    readonly code: AwardSourceErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "AwardSourceError";
+  }
+}
+
 /** Accepts URLs like https://www.kinopoisk.ru/awards/oscar/2026/ (with or without protocol/www/trailing slash) */
 export function parseAwardUrl(input: string): ParsedAwardUrl | null {
   const trimmed = input.trim();
@@ -46,11 +63,15 @@ function cleanText(s: string): string {
     .trim();
 }
 
+type FetchTextResult =
+  | { ok: true; text: string; status: number }
+  | { ok: false; kind: "timeout" | "network" | "http"; status?: number };
+
 async function fetchWithTimeout(
   url: string,
   headers: Record<string, string>,
   timeoutMs: number,
-): Promise<string | null> {
+): Promise<FetchTextResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -59,10 +80,13 @@ async function fetchWithTimeout(
       signal: controller.signal,
       cache: "no-store",
     });
-    if (!res.ok) return null;
-    return await res.text();
-  } catch {
-    return null;
+    if (!res.ok) return { ok: false, kind: "http", status: res.status };
+    return { ok: true, text: await res.text(), status: res.status };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return { ok: false, kind: "timeout" };
+    }
+    return { ok: false, kind: "network" };
   } finally {
     clearTimeout(timer);
   }
@@ -73,6 +97,18 @@ function looksLikeAwardPage(html: string | null): html is string {
     !!html &&
     (html.includes("awardCol2") || html.includes("itemList")) &&
     html.includes("awards")
+  );
+}
+
+function looksLikeMissingPage(text: string): boolean {
+  return /(?:target url returned error\s*404|ошибка\s*404|страниц[аы]\s+не\s+найден[аы]?|page not found)/i.test(
+    text,
+  );
+}
+
+function looksLikeRateLimit(text: string): boolean {
+  return /(?:too many requests|rate limit(?:ed| exceeded)?|лимит\s+запросов|ошибка\s*429)/i.test(
+    text,
   );
 }
 
@@ -90,11 +126,15 @@ export async function fetchAndParseAward(
   const canonicalUrl = `${KP_BASE}/awards/${slug}/${year}/`;
 
   // 1) HTML via Jina
+  let htmlError: AwardSourceError | null = null;
   try {
     const { html, via } = await fetchAwardHtml(canonicalUrl, opts);
     return parseAwardPage(html, slug, year, via);
-  } catch {
-    // continue to markdown fallback
+  } catch (error) {
+    htmlError =
+      error instanceof AwardSourceError
+        ? error
+        : new AwardSourceError("parse", "Не удалось разобрать страницу премии.");
   }
 
   // 2) Markdown via Jina
@@ -102,21 +142,54 @@ export async function fetchAndParseAward(
   if (process.env.JINA_API_KEY) {
     mdHeaders["Authorization"] = `Bearer ${process.env.JINA_API_KEY}`;
   }
-  const md = await fetchWithTimeout(
+  const mdResult = await fetchWithTimeout(
     `https://r.jina.ai/${canonicalUrl}`,
     mdHeaders,
     opts.quick ? 55_000 : 90_000,
   );
-  if (md && md.includes("Номинанты:")) {
+  if (mdResult.ok && mdResult.text.includes("Номинанты:")) {
     try {
-      return parseAwardMarkdown(md, slug, year, "kinopoisk.ru (markdown)");
-    } catch {
-      // continue
+      return parseAwardMarkdown(
+        mdResult.text,
+        slug,
+        year,
+        "kinopoisk.ru (markdown)",
+      );
+    } catch (error) {
+      throw error instanceof AwardSourceError
+        ? error
+        : new AwardSourceError("parse", "Не удалось разобрать данные премии.");
     }
   }
-
-  throw new Error(
-    "Не удалось получить данные по этой ссылке. Скорее всего, на Кинопоиске ещё нет страницы этой премии за указанный год (попробуйте другой год), либо сервис временно недоступен — повторите попытку через минуту.",
+  if (mdResult.ok && looksLikeRateLimit(mdResult.text)) {
+    throw new AwardSourceError(
+      "rate_limited",
+      "Источник временно ограничил запросы. Повторите попытку позже.",
+    );
+  }
+  if (mdResult.ok && looksLikeMissingPage(mdResult.text)) {
+    throw new AwardSourceError(
+      "not_found",
+      "На Кинопоиске нет данных этой премии за указанный год.",
+    );
+  }
+  if (mdResult.ok) {
+    if (htmlError && htmlError.code !== "not_found") throw htmlError;
+    throw new AwardSourceError(
+      "parse",
+      "Источник ответил, но формат страницы не распознан. Данные не помечены отсутствующими.",
+    );
+  }
+  if (mdResult.kind === "http" && mdResult.status === 429) {
+    throw new AwardSourceError(
+      "rate_limited",
+      "Источник временно ограничил запросы. Повторите попытку позже.",
+    );
+  }
+  if (htmlError && htmlError.code !== "not_found") throw htmlError;
+  throw new AwardSourceError(
+    mdResult.kind === "timeout" ? "timeout" : "upstream",
+    "Источник временно недоступен. Повторите попытку через минуту.",
   );
 }
 
@@ -129,6 +202,12 @@ export async function fetchAwardHtml(
   canonicalUrl: string,
   opts: { quick?: boolean } = {},
 ): Promise<{ html: string; via: string }> {
+  let sawReadableResponse = false;
+  let sawRateLimit = false;
+  let sawTimeout = false;
+  let sawTransientFailure = false;
+  let sawConfirmedMissing = false;
+  let sawUnrecognizedResponse = false;
   // 1) Jina Reader
   const jinaHeaders: Record<string, string> = {
     "X-Return-Format": "html",
@@ -143,25 +222,40 @@ export async function fetchAwardHtml(
       attempt === 0
         ? jinaHeaders
         : { ...jinaHeaders, "X-No-Cache": "true", "X-Timeout": "30" };
-    const html = await fetchWithTimeout(
+    const result = await fetchWithTimeout(
       `https://r.jina.ai/${canonicalUrl}`,
       headers,
       timeout,
     );
-    if (looksLikeAwardPage(html)) return { html, via: "kinopoisk.ru" };
+    if (result.ok) {
+      sawReadableResponse = true;
+      if (looksLikeAwardPage(result.text)) {
+        return { html: result.text, via: "kinopoisk.ru" };
+      }
+      sawRateLimit ||= looksLikeRateLimit(result.text);
+      sawConfirmedMissing ||= looksLikeMissingPage(result.text);
+      sawUnrecognizedResponse ||=
+        !looksLikeRateLimit(result.text) && !looksLikeMissingPage(result.text);
+    } else {
+      sawRateLimit ||= result.kind === "http" && result.status === 429;
+      sawTimeout ||= result.kind === "timeout";
+      sawTransientFailure ||=
+        result.kind === "network" ||
+        (result.kind === "http" && (result.status ?? 500) >= 500);
+    }
   }
 
   // 2) Wayback Machine fallback
-  const availJson = await fetchWithTimeout(
+  const availability = await fetchWithTimeout(
     `https://archive.org/wayback/available?url=${encodeURIComponent(
       canonicalUrl.replace(/^https?:\/\//, ""),
     )}`,
     {},
     20_000,
   );
-  if (availJson) {
+  if (availability.ok) {
     try {
-      const data = JSON.parse(availJson) as {
+      const data = JSON.parse(availability.text) as {
         archived_snapshots?: { closest?: { url?: string; timestamp?: string } };
       };
       const snap = data.archived_snapshots?.closest;
@@ -170,18 +264,53 @@ export async function fetchAwardHtml(
           /\/web\/(\d+)\//,
           (_s, ts: string) => `/web/${ts}id_/`,
         );
-        const html = await fetchWithTimeout(rawUrl, {}, 60_000);
-        if (looksLikeAwardPage(html)) {
-          return { html, via: `web.archive.org (снимок ${snap.timestamp.slice(0, 8)})` };
+        const archived = await fetchWithTimeout(rawUrl, {}, 60_000);
+        if (archived.ok) {
+          sawReadableResponse = true;
+          sawRateLimit ||= looksLikeRateLimit(archived.text);
+          sawConfirmedMissing ||= looksLikeMissingPage(archived.text);
+          sawUnrecognizedResponse ||=
+            !looksLikeRateLimit(archived.text) && !looksLikeMissingPage(archived.text);
+        } else {
+          sawTimeout ||= archived.kind === "timeout";
+          sawTransientFailure = true;
+        }
+        if (archived.ok && looksLikeAwardPage(archived.text)) {
+          return {
+            html: archived.text,
+            via: `web.archive.org (снимок ${snap.timestamp.slice(0, 8)})`,
+          };
         }
       }
     } catch {
-      // ignore
+      sawTransientFailure = true;
     }
+  } else {
+    sawRateLimit ||= availability.kind === "http" && availability.status === 429;
+    sawTimeout ||= availability.kind === "timeout";
+    sawTransientFailure = true;
   }
-
-  throw new Error(
-    "Не удалось получить данные по этой ссылке. Скорее всего, на Кинопоиске ещё нет страницы этой премии за указанный год (попробуйте другой год), либо сервис временно недоступен — повторите попытку через минуту.",
+  if (sawRateLimit) {
+    throw new AwardSourceError(
+      "rate_limited",
+      "Источник временно ограничил запросы. Повторите попытку позже.",
+    );
+  }
+  if (sawTimeout && !sawReadableResponse) {
+    throw new AwardSourceError("timeout", "Источник не ответил вовремя.");
+  }
+  if (sawTransientFailure && !sawReadableResponse) {
+    throw new AwardSourceError("upstream", "Источник временно недоступен.");
+  }
+  if (sawConfirmedMissing && !sawUnrecognizedResponse) {
+    throw new AwardSourceError(
+      "not_found",
+      "На Кинопоиске нет данных этой премии за указанный год.",
+    );
+  }
+  throw new AwardSourceError(
+    "parse",
+    "Источник ответил, но формат страницы не распознан. Данные не помечены отсутствующими.",
   );
 }
 
@@ -315,7 +444,8 @@ export function parseAwardPage(
 
   const nonEmpty = categories.filter((c) => c.entries.length > 0);
   if (nonEmpty.length === 0) {
-    throw new Error(
+    throw new AwardSourceError(
+      "not_found",
       "Страница загружена, но данные о номинациях не найдены. Возможно, для этого года и премии данных ещё нет.",
     );
   }
@@ -445,7 +575,10 @@ export function parseAwardMarkdown(
 
   const nonEmpty = categories.filter((c) => c.entries.length > 0);
   if (nonEmpty.length === 0) {
-    throw new Error("Markdown-версия страницы не содержит номинаций.");
+    throw new AwardSourceError(
+      "not_found",
+      "Markdown-версия страницы не содержит номинаций.",
+    );
   }
 
   return {

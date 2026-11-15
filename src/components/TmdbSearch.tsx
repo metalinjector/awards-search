@@ -13,58 +13,16 @@ export default function TmdbSearch() {
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<TmdbSearchResult[]>([]);
   const [configured, setConfigured] = useState<boolean | null>(null);
-  const [fromEnv, setFromEnv] = useState(false);
   const [resolvingId, setResolvingId] = useState<number | null>(null);
-  const [keyInput, setKeyInput] = useState("");
-  const [keySaving, setKeySaving] = useState(false);
-  const [keyError, setKeyError] = useState<string | null>(null);
-  const [keySaved, setKeySaved] = useState(false);
 
   useEffect(() => {
     fetch("/api/tmdb/status")
       .then((r) => r.json())
       .then((d) => {
         setConfigured(Boolean(d.configured));
-        setFromEnv(Boolean(d.fromEnv));
       })
       .catch(() => setConfigured(null));
   }, []);
-
-  async function saveKey(e: React.FormEvent) {
-    e.preventDefault();
-    const key = keyInput.trim();
-    if (key.length < 10) {
-      setKeyError("Вставьте ключ целиком");
-      return;
-    }
-    setKeySaving(true);
-    setKeyError(null);
-    try {
-      const res = await fetch("/api/tmdb/key", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setKeyError(data.error ?? "Не удалось сохранить ключ");
-        return;
-      }
-      setConfigured(true);
-      setKeySaved(true);
-      setKeyInput("");
-    } catch {
-      setKeyError("Ошибка сети — попробуйте ещё раз");
-    } finally {
-      setKeySaving(false);
-    }
-  }
-
-  async function removeKey() {
-    await fetch("/api/tmdb/key", { method: "DELETE" });
-    setConfigured(false);
-    setKeySaved(false);
-  }
 
   async function doSearch(e?: React.FormEvent) {
     e?.preventDefault();
@@ -120,84 +78,19 @@ export default function TmdbSearch() {
     <div>
       {configured === false && (
         <div className="mb-5 rounded-2xl border border-sky-400/30 bg-sky-500/10 p-5 text-sm text-sky-200">
-          <div className="font-semibold">🔑 Нужен бесплатный ключ TMDB API</div>
-          <ol className="mt-2 list-decimal space-y-1 pl-5 text-sky-300/90">
-            <li>
-              Зарегистрируйтесь на{" "}
-              <a
-                href="https://www.themoviedb.org/signup"
-                target="_blank"
-                rel="noreferrer"
-                className="underline"
-              >
-                themoviedb.org
-              </a>{" "}
-              и создайте ключ в разделе{" "}
-              <a
-                href="https://www.themoviedb.org/settings/api"
-                target="_blank"
-                rel="noreferrer"
-                className="underline"
-              >
-                Settings → API
-              </a>
-            </li>
-            <li>
-              Скопируйте <b>API Key (v3 auth)</b> или <b>API Read Access Token</b> и
-              вставьте его в поле ниже
-            </li>
-          </ol>
-
-          <form onSubmit={saveKey} className="mt-4 flex flex-col gap-2 sm:flex-row">
-            <input
-              type="password"
-              value={keyInput}
-              onChange={(e) => setKeyInput(e.target.value)}
-              placeholder="Вставьте ключ TMDB (v3 key или v4 token)…"
-              className="flex-1 rounded-xl border border-sky-300/30 bg-white/10 px-4 py-2.5 text-sm text-white placeholder-sky-300/50 outline-none focus:border-sky-300/70"
-              autoComplete="off"
-            />
-            <button
-              type="submit"
-              disabled={keySaving || keyInput.trim().length < 10}
-              className="rounded-xl bg-sky-500 px-6 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:opacity-50"
-            >
-              {keySaving ? "Проверяем…" : "Сохранить ключ"}
-            </button>
-          </form>
-          {keyError && <div className="mt-2 text-xs text-red-300">{keyError}</div>}
-          <div className="mt-3 text-xs text-sky-300/70">
-            Ключ проверяется запросом к TMDB и хранится в базе данных приложения.
-            Альтернатива — переменные окружения <code className="rounded bg-white/10 px-1 py-0.5">TMDB_API_KEY</code> /{" "}
-            <code className="rounded bg-white/10 px-1 py-0.5">TMDB_ACCESS_TOKEN</code>. Пока ключа нет, работает поиск через{" "}
-            <a href="/imdb" className="underline">
-              IMDb
-            </a>
-            .
-          </div>
-        </div>
-      )}
-
-      {configured === true && keySaved && (
-        <div className="mb-5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
-          <span>✅ Ключ TMDB сохранён и проверен — поиск активен</span>
-        </div>
-      )}
-
-      {configured === true && !fromEnv && !keySaved && (
-        <div className="mb-5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-xs text-slate-400">
-          <span>🔑 Используется ключ TMDB, сохранённый через интерфейс</span>
-          <button
-            onClick={removeKey}
-            className="rounded-lg border border-white/15 px-3 py-1 transition hover:border-red-400/50 hover:text-red-300"
-          >
-            Удалить ключ
-          </button>
+          <div className="font-semibold">TMDB временно не настроен</div>
+          <p className="mt-2 text-sky-300/80">
+            Ключ задаёт администратор сервиса через защищённую конфигурацию. Пока можно
+            искать фильмы и награды через{" "}
+            <a href="/imdb" className="underline">IMDb</a>.
+          </p>
         </div>
       )}
 
       <form onSubmit={doSearch} className="flex flex-col gap-3 sm:flex-row">
+        <label htmlFor="tmdb-title-search" className="sr-only">Название фильма или сериала для поиска в TMDB</label>
         <input
+          id="tmdb-title-search"
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -215,13 +108,13 @@ export default function TmdbSearch() {
       </form>
 
       {error && (
-        <div className="mt-4 rounded-xl border border-red-400/30 bg-red-500/10 px-5 py-4 text-red-300">
+        <div role="alert" className="mt-4 rounded-xl border border-red-400/30 bg-red-500/10 px-5 py-4 text-red-300">
           {error}
         </div>
       )}
 
       {phase === "resolving" && (
-        <div className="mt-4 flex items-center gap-3 rounded-xl border border-teal-200/20 bg-teal-500/10 px-5 py-4 text-teal-200">
+        <div role="status" aria-live="polite" className="mt-4 flex items-center gap-3 rounded-xl border border-teal-200/20 bg-teal-500/10 px-5 py-4 text-teal-200">
           <span className="inline-block h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-teal-300 border-t-transparent" />
           Определяем IMDb ID через TMDB и открываем награды…
         </div>

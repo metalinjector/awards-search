@@ -2,25 +2,30 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import FilmSearch from "@/components/FilmSearch";
 import FilmSearchForm from "@/components/FilmSearchForm";
+import { scanYears } from "@/lib/awards";
 
 export const dynamic = "force-dynamic";
 
 interface Props {
-  searchParams: Promise<{ q?: string; year?: string }>;
+  searchParams: Promise<{ q?: string; year?: string; kpId?: string }>;
 }
 
 export async function generateMetadata({ searchParams }: Props): Promise<Metadata> {
-  const { q } = await searchParams;
+  const { q, year } = await searchParams;
   return {
-    title: q ? `«${q}» — награды и номинации` : "Поиск фильма по наградам",
+    title: q ? `«${q}» ${year ?? ""} — награды и номинации` : "Поиск фильма по наградам",
+    robots: q ? { index: false, follow: true } : undefined,
   };
 }
 
 export default async function FilmPage({ searchParams }: Props) {
-  const { q, year: yearStr } = await searchParams;
+  const { q, year: yearStr, kpId: kpIdParam } = await searchParams;
   const query = (q ?? "").trim();
-  const year = parseInt(yearStr ?? "", 10);
-  const valid = query.length >= 2 && Number.isFinite(year) && year >= 1900 && year <= 2100;
+  const year = /^\d{4}$/.test(yearStr ?? "") ? Number(yearStr) : Number.NaN;
+  const kpId = /^\d{1,12}$/.test(kpIdParam ?? "") ? kpIdParam ?? "" : "";
+  const valid = query.length >= 2 && year >= 1900 && year <= 2100;
+  const years = valid ? scanYears(year) : [];
+  const yearsLabel = years.join(", ");
 
   return (
     <main className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 text-white">
@@ -50,18 +55,27 @@ export default async function FilmPage({ searchParams }: Props) {
             className="inline-block h-3.5 w-auto"
           />
           <span>
-            за {valid ? `${year}, ${year + 1} и ${year + 2}` : "3"} годы — Оскар, Золотой
+            за {valid ? yearsLabel || "доступные" : "доступные"} годы — Оскар, Золотой
             глобус, BAFTA, Канны, Сезар и ещё 19 наград.
           </span>
         </p>
 
         <div className="mt-6">
-          <FilmSearchForm defaultQuery={query} defaultYear={valid ? year : undefined} />
+          <FilmSearchForm
+            defaultQuery={query}
+            defaultYear={valid ? year : undefined}
+            defaultKpId={kpId}
+          />
         </div>
 
         <div className="mt-8">
           {valid ? (
-            <FilmSearch key={`${query}:${year}`} initialQuery={query} initialYear={year} />
+            <FilmSearch
+              key={`${query}:${year}:${kpId}`}
+              initialQuery={query}
+              initialYear={year}
+              kpId={kpId || undefined}
+            />
           ) : (
             <div className="rounded-2xl border border-white/10 bg-white/5 px-6 py-12 text-center text-slate-400">
               Введите название фильма и год его выпуска, чтобы найти все его награды и
