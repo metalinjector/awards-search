@@ -10,3 +10,14 @@ test("current reports expire quickly while historic reports remain stable", () =
   assert.equal(isReportFresh(new Date("2026-08-31T06:00:00Z"), 2026, now), true);
   assert.equal(isReportFresh(new Date("2026-08-30T06:00:00Z"), 2026, now), false);
 });
+
+test("a report fetched after its award year is final and never re-fetched", () => {
+  const now = new Date("2026-11-15T12:00:00Z");
+  // fetched in 2026 for the 2025 ceremony — settled, even months later
+  assert.equal(isReportFresh(new Date("2026-01-20T00:00:00Z"), 2025, now), true);
+  // fetched during 2025 for the 2025 ceremony — still subject to the 7-day TTL
+  assert.equal(isReportFresh(new Date("2025-12-01T00:00:00Z"), 2025, now), false);
+  // the current year keeps the short TTL
+  assert.equal(isReportFresh(new Date("2026-11-15T06:00:00Z"), 2026, now), true);
+  assert.equal(isReportFresh(new Date("2026-11-14T06:00:00Z"), 2026, now), false);
+});

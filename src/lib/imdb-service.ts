@@ -11,6 +11,8 @@ import { runExternalTask } from "./work-queue";
 import { observeOperation } from "./metrics";
 
 const TTL_MS = 1000 * 60 * 60 * 24; // 24h
+/** Incomplete results (IMDb throttled mid-way) are retried soon */
+const PARTIAL_TTL_MS = 1000 * 60 * 10;
 
 export async function getImdbAwards(
   imdbId: string,
@@ -23,7 +25,7 @@ export async function getImdbAwards(
     .limit(1);
   if (!refresh && rows.length > 0) {
     const age = Date.now() - rows[0].fetchedAt.getTime();
-    if (age < TTL_MS) {
+    if (age < (rows[0].payload.partial ? PARTIAL_TTL_MS : TTL_MS)) {
       return { payload: rows[0].payload, fetchedAt: rows[0].fetchedAt };
     }
   }
@@ -32,6 +34,10 @@ export async function getImdbAwards(
     const payload = await runExternalTask(`imdb-awards:${imdbId}`, () =>
       observeOperation("imdb_awards", () => fetchImdbAwards(imdbId)),
     );
+    // Never replace a complete cached report with an incomplete one
+    if (payload.partial && rows.length > 0 && !rows[0].payload.partial) {
+      return { payload: rows[0].payload, fetchedAt: rows[0].fetchedAt };
+    }
     const now = new Date();
     await db
       .insert(imdbTitles)
@@ -73,13 +79,19 @@ export async function getImdbPerson(
     .limit(1);
   if (rows.length > 0) {
     const age = Date.now() - rows[0].fetchedAt.getTime();
-    if (age < PERSON_TTL_MS) return rows[0].payload;
+    if (age < (rows[0].payload.partial ? PARTIAL_TTL_MS : PERSON_TTL_MS)) {
+      return rows[0].payload;
+    }
   }
 
   try {
     const payload = await runExternalTask(`imdb-person:${nameId}`, () =>
       observeOperation("imdb_person", () => fetchImdbPerson(nameId)),
     );
+    // Never replace a complete cached filmography with an incomplete one
+    if (payload.partial && rows.length > 0 && !rows[0].payload.partial) {
+      return rows[0].payload;
+    }
     await db
       .insert(imdbPersons)
       .values({ nameId, payload, fetchedAt: new Date() })

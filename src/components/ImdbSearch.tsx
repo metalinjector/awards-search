@@ -191,6 +191,13 @@ export default function ImdbSearch() {
       )}
 
       {/* awards view */}
+      {phase === "done" && payload && payload.partial && (
+        <div role="status" className="mt-8 -mb-4 rounded-xl border border-amber-400/30 bg-amber-500/10 px-5 py-3 text-sm text-amber-200">
+          Данные неполные: IMDb ограничил запросы, загружено {noms.length} из{" "}
+          {payload.stats.nominationCount + payload.stats.winCount} номинаций. Откройте
+          страницу ещё раз через 10 минут — догрузим остальное.
+        </div>
+      )}
       {phase === "done" && payload && (
         <div className="mt-8">
           {/* title card */}

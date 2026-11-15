@@ -4,6 +4,7 @@ import {
   fetchOfficialTitle,
   fetchTitleImages,
   type GalleryImage,
+  type GalleryPage,
 } from "@/lib/imdb";
 import { enforceRateLimit } from "@/lib/api-security";
 import { acquireLease } from "@/lib/work-queue";
@@ -16,6 +17,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const MAX_IMAGES = 500;
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 const MAX_ARCHIVE_INPUT_BYTES = 1024 * 1024 * 1024;
+/** Gallery pages fetched for one archive (each page holds ~50 images) */
+const MAX_PAGES = 20;
+/** Images fetched ahead of the one being written */
+const WINDOW = 4;
 
 /** Strip characters that are invalid in file names */
 function safeFileName(s: string): string {
@@ -73,6 +78,11 @@ async function fetchImage(url: string, signal: AbortSignal): Promise<ArrayBuffer
 }
 
 export async function GET(req: NextRequest) {
+  // Validate before spending the caller's rate-limit budget
+  const id = (req.nextUrl.searchParams.get("id") ?? "").trim();
+  if (!/^tt\d{4,12}$/.test(id)) {
+    return NextResponse.json({ error: "Некорректный IMDb ID" }, { status: 400 });
+  }
   const limited = enforceRateLimit(req, { name: "imdb_zip", limit: 2, windowMs: 60 * 60_000 });
   if (limited) return limited;
   const releaseLease = acquireLease("imdb_zip", 2);
@@ -82,32 +92,20 @@ export async function GET(req: NextRequest) {
       { status: 503, headers: { "Retry-After": "30" } },
     );
   }
-  const id = (req.nextUrl.searchParams.get("id") ?? "").trim();
-  if (!/^tt\d{4,12}$/.test(id)) {
-    releaseLease();
-    return NextResponse.json({ error: "Некорректный IMDb ID" }, { status: 400 });
-  }
 
-  // Collect the full image list (metadata only) + the official title
-  let images: GalleryImage[];
+  // Only the title and the first page are needed before the download starts;
+  // the rest of the image list is paged in while the archive is streaming.
+  let first: GalleryPage;
   let title: string;
   try {
-    images = [];
-    let token: string | undefined;
-    for (let page = 0; page < 10 && images.length < MAX_IMAGES; page++) {
-      const p = await fetchTitleImages(id, token);
-      images.push(...p.images.slice(0, MAX_IMAGES - images.length));
-      token = p.nextPageToken;
-      if (!token) break;
-    }
-    title = safeFileName(await fetchOfficialTitle(id));
+    [first, title] = await Promise.all([fetchTitleImages(id), fetchOfficialTitle(id)]);
   } catch (err) {
     releaseLease();
     const message =
       err instanceof Error ? err.message : "Не удалось получить галерею";
     return NextResponse.json({ error: message }, { status: 502 });
   }
-  if (images.length === 0) {
+  if (first.images.length === 0) {
     releaseLease();
     return NextResponse.json(
       { error: "В галерее нет изображений" },
@@ -115,76 +113,90 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const zipName = `${title} img.zip`;
-  const pad = String(images.length).length;
+  const zipName = `${safeFileName(title) || id} img.zip`;
+  const expected = Math.min(MAX_IMAGES, Math.max(first.totalCount, first.images.length));
+  const pad = String(expected).length;
 
-  let streamAbortController: AbortController | null = null;
+  const abort = new AbortController();
+  req.signal?.addEventListener("abort", () => abort.abort(), { once: true });
+
+  /** The image list, page by page, capped at MAX_IMAGES */
+  async function* allImages(): AsyncGenerator<GalleryImage> {
+    let page = first;
+    let yielded = 0;
+    for (let n = 1; ; n++) {
+      for (const image of page.images) {
+        if (yielded >= MAX_IMAGES) return;
+        yielded += 1;
+        yield image;
+      }
+      if (!page.nextPageToken || n >= MAX_PAGES || abort.signal.aborted) return;
+      try {
+        page = await fetchTitleImages(id, page.nextPageToken);
+      } catch {
+        // the archive is already on its way — finish it with what we have
+        incrementMetric("imdb_zip_list_cut_total");
+        return;
+      }
+    }
+  }
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const requestController = new AbortController();
-      streamAbortController = requestController;
-      let released = false;
-      const finish = () => {
-        if (released) return;
-        released = true;
-        releaseLease();
-      };
       const zip = new Zip((err, chunk, final) => {
         if (err) {
+          abort.abort();
           try {
             controller.error(err);
           } catch {}
-          finish();
           return;
         }
         try {
           controller.enqueue(chunk);
           if (final) controller.close();
         } catch {
-          requestController.abort();
-          finish();
+          abort.abort();
         }
       });
 
       try {
         // Sliding window: prefetch a few images ahead, append strictly in order
-        const WINDOW = 4;
-        const pending: (Promise<ArrayBuffer | null> | undefined)[] = [];
-        for (let i = 0; i < Math.min(WINDOW, images.length); i++) {
-          pending[i] = fetchImage(images[i].url, requestController.signal);
-        }
-        let totalInputBytes = 0;
-        for (let i = 0; i < images.length; i++) {
-          const ahead = i + WINDOW;
-          if (ahead < images.length) {
-            pending[ahead] = fetchImage(images[ahead].url, requestController.signal);
+        const source = allImages();
+        const queue: { image: GalleryImage; data: Promise<ArrayBuffer | null> }[] = [];
+        const fill = async () => {
+          while (queue.length < WINDOW) {
+            const next = await source.next();
+            if (next.done) return;
+            queue.push({ image: next.value, data: fetchImage(next.value.url, abort.signal) });
           }
-
-          const buf = await pending[i];
-          pending[i] = undefined; // release memory
+        };
+        let index = 0;
+        let totalInputBytes = 0;
+        for (await fill(); queue.length > 0; await fill()) {
+          const { image, data } = queue.shift()!;
+          index += 1;
+          const buf = await data;
+          if (abort.signal.aborted) return;
           if (!buf) continue; // skip broken images
           totalInputBytes += buf.byteLength;
           if (totalInputBytes > MAX_ARCHIVE_INPUT_BYTES) {
             incrementMetric("imdb_zip_size_limit_total");
-            requestController.abort();
-            break;
+            break; // close the archive with what fits
           }
 
-          // Respect backpressure: don't run far ahead of the client
-          while ((controller.desiredSize ?? 1) <= 0) {
-            if (requestController.signal.aborted) {
-              throw new DOMException("ZIP stream cancelled", "AbortError");
-            }
+          // Respect backpressure: don't run far ahead of the client.
+          // (After a cancel desiredSize stays 0 forever — hence the abort check.)
+          while (!abort.signal.aborted && (controller.desiredSize ?? 1) <= 0) {
             await sleep(50);
           }
+          if (abort.signal.aborted) return;
 
           const ext =
-            images[i].url.match(/\.(jpe?g|png|gif|webp)(?:$|\?)/i)?.[1]?.toLowerCase() ??
+            image.url.match(/\.(jpe?g|png|gif|webp)(?:$|\?)/i)?.[1]?.toLowerCase() ??
             "jpg";
+          const type = image.type ? safeFileName(image.type).replace(/\s+/g, "_") : "";
           const name =
-            `${String(i + 1).padStart(pad, "0")}` +
-            (images[i].type ? `_${images[i].type}` : "") +
-            `.${ext}`;
+            String(index).padStart(pad, "0") + (type ? `_${type}` : "") + `.${ext}`;
           // JPEGs don't compress — store as-is (fast, streams instantly)
           const file = new ZipPassThrough(name);
           zip.add(file);
@@ -192,16 +204,21 @@ export async function GET(req: NextRequest) {
         }
         zip.end();
       } catch (err) {
-        try {
-          controller.error(err);
-        } catch {}
-        requestController.abort();
-        finish();
+        if (!abort.signal.aborted) {
+          abort.abort();
+          try {
+            controller.error(err);
+          } catch {}
+        }
+      } finally {
+        // Free the slot however the archive ended: completed, failed or cancelled
+        abort.abort();
+        releaseLease();
       }
     },
     cancel() {
       incrementMetric("imdb_zip_cancelled_total");
-      streamAbortController?.abort();
+      abort.abort();
       releaseLease();
     },
   });

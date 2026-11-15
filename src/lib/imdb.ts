@@ -53,6 +53,8 @@ export interface ImdbAwardsPayload {
   title: ImdbTitleInfo;
   stats: { nominationCount: number; winCount: number };
   nominations: ImdbNomination[];
+  /** IMDb stopped answering mid-way: only the first pages were loaded */
+  partial?: boolean;
 }
 
 const UA = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" };
@@ -293,6 +295,8 @@ export interface ImdbFilmographyItem {
 export interface ImdbPersonPayload {
   person: ImdbNameInfo;
   filmography: ImdbFilmographyItem[];
+  /** IMDb stopped answering mid-way: only the first pages were loaded */
+  partial?: boolean;
 }
 
 /** Normalize API dates to DD.MM.YYYY where all parts are available. */
@@ -312,6 +316,21 @@ function formatApiDate(
 }
 
 /** Fetch person info + full filmography (paginated) */
+type CreditsPage = {
+  name?: {
+    credits?: {
+      pageInfo?: GraphqlPageInfo;
+      edges?: Array<{
+        node?: {
+          category?: { id?: string };
+          title?: GraphqlTitle;
+          characters?: Array<{ name?: string }>;
+        };
+      }>;
+    };
+  };
+};
+
 export async function fetchImdbPerson(nameId: string): Promise<ImdbPersonPayload> {
   if (!/^nm\d{4,12}$/.test(nameId)) {
     throw new Error("Некорректный IMDb ID персоны");
@@ -341,21 +360,22 @@ export async function fetchImdbPerson(nameId: string): Promise<ImdbPersonPayload
   const seen = new Set<string>();
   let pageToken: string | undefined;
   const seenTokens = new Set<string>();
+  let partial = false;
   for (let page = 0; page < 20; page++) {
-    const data = await imdbGraphql<{
-      name?: {
-        credits?: {
-          pageInfo?: GraphqlPageInfo;
-          edges?: Array<{
-            node?: {
-              category?: { id?: string };
-              title?: GraphqlTitle;
-              characters?: Array<{ name?: string }>;
-            };
-          }>;
-        };
-      };
-    }>(NAME_CREDITS_QUERY, { id: nameId, first: 100, after: pageToken ?? null });
+    let data: CreditsPage;
+    try {
+      data = await imdbGraphql<CreditsPage>(NAME_CREDITS_QUERY, {
+        id: nameId,
+        first: 100,
+        after: pageToken ?? null,
+      });
+    } catch (err) {
+      // The first page decides whether there is anything to show at all;
+      // a failure further on still leaves a useful (flagged) filmography.
+      if (page === 0) throw err;
+      partial = true;
+      break;
+    }
     if (!data.name) throw new Error("Персона не найдена на IMDb");
     const connection = data.name.credits;
     for (const edge of connection?.edges ?? []) {
@@ -393,7 +413,7 @@ export async function fetchImdbPerson(nameId: string): Promise<ImdbPersonPayload
   }
 
   filmography.sort((a, b) => (b.year ?? 0) - (a.year ?? 0));
-  return { person, filmography };
+  return partial ? { person, filmography, partial } : { person, filmography };
 }
 
 /* ---------- Title image gallery ---------- */
@@ -545,18 +565,27 @@ export async function fetchImdbAwards(imdbId: string): Promise<ImdbAwardsPayload
   const seenTokens = new Set<string>();
   let reportedTotal = 0;
   let pageToken: string | undefined;
+  let partial = false;
 
   for (let page = 0; page < 40; page++) {
-    const data = await imdbGraphql<{
+    let data: {
       title?: GraphqlTitle & {
         principalCredits?: PrincipalCredit[];
         nominations?: AwardsConnection;
       };
-    }>(TITLE_AWARDS_QUERY, {
-      id: imdbId,
-      first: 100,
-      after: pageToken ?? null,
-    });
+    };
+    try {
+      data = await imdbGraphql<typeof data>(TITLE_AWARDS_QUERY, {
+        id: imdbId,
+        first: 100,
+        after: pageToken ?? null,
+      });
+    } catch (err) {
+      // See fetchImdbPerson: keep what the earlier pages delivered
+      if (page === 0) throw err;
+      partial = true;
+      break;
+    }
     const rawTitle = data.title;
     if (!rawTitle) throw new Error("Фильм не найден на IMDb");
 
@@ -625,5 +654,6 @@ export async function fetchImdbAwards(imdbId: string): Promise<ImdbAwardsPayload
     title,
     stats: { winCount, nominationCount: Math.max(0, total - winCount) },
     nominations,
+    ...(partial ? { partial } : {}),
   };
 }

@@ -483,14 +483,17 @@ function parseLinksFromChunk(chunk: string): {
       films.push({ text, url });
     lastEnd = (m.index ?? 0) + m[0].length;
   }
-  const en = cleanText(chunk.slice(lastEnd).replace(/\*+/g, ""));
-  const ru = cleanText(
-    chunk
-      .slice(0, lastEnd)
-      .replace(LINK_RE, "$1")
-      .replace(/\*+/g, ""),
-  );
+  const en = mdText(chunk.slice(lastEnd));
+  const ru = mdText(chunk.slice(0, lastEnd).replace(LINK_RE, "$1"));
   return { ru, en, people, films };
+}
+
+/** "Номинанты:", "Участники конкурсной программы:", "Остальные участники …:" */
+const NOMINEE_LIST_RE = /^(?:Номинанты|(?:Остальные )?[Уу]частники[^:*\[]*):\s*/;
+
+/** Markdown glues "Name—Film"; the site (and the HTML parser) shows "Name — Film" */
+function mdText(s: string): string {
+  return cleanText(s.replace(/\*+/g, "").replace(/\s*—\s*/g, " — "));
 }
 
 /** Parse Jina Reader markdown output of an award page */
@@ -516,8 +519,10 @@ export function parseAwardMarkdown(
     const line = lines[i].trim();
     if (!line) continue;
 
-    // Category: [](url)**Category Name**
-    const catMatch = line.match(/^\[\]\([^)]*\)\*\*(.+?)\*\*/);
+    // Category: [](url)**Category Name** — festival pages put an icon in front
+    const catMatch = line.match(
+      /^(?:!\[[^\]]*\]\([^)]*\))?\[\]\([^)]*\)\*\*(.+?)\*\*/,
+    );
     if (catMatch) {
       pendingWinner = null;
       current = { name: cleanText(catMatch[1]), entries: [] };
@@ -526,14 +531,16 @@ export function parseAwardMarkdown(
     }
 
     // Winner: ![Image N: title](poster)**[Name](url)...**
-    if (line.startsWith("![") && current) {
+    // (festival pages also list winners without a poster: **[Name](url)—2-й приз**)
+    if ((line.startsWith("![") || line.startsWith("**[")) && current) {
       const imgMatch = line.match(/^!\[[^\]]*\]\((https?:[^)\s]+)\)/);
       const posterUrl = imgMatch?.[1];
       const rest = line.replace(/^!\[[^\]]*\]\([^)]*\)/, "");
       const parsed = parseLinksFromChunk(rest);
       if (parsed.ru || parsed.people.length > 0 || parsed.films.length > 0) {
         const entry: Entry = {
-          ru: parsed.ru || parsed.en,
+          // the whole line as text, e.g. "Мерве Диздар — О сухой траве", "Дыра — 2-й приз"
+          ru: mdText(rest.replace(LINK_RE, "$1")),
           en: "",
           people: parsed.people,
           films: parsed.films,
@@ -547,9 +554,11 @@ export function parseAwardMarkdown(
     }
 
     // Nominees: "Номинанты: * [X](url) OrigX * ..."
-    if (line.startsWith("Номинанты:") && current) {
+    // (festivals: "Остальные участники конкурсной программы: * ...")
+    const listMatch = line.match(NOMINEE_LIST_RE);
+    if (listMatch && current) {
       pendingWinner = null;
-      const body = line.replace(/^Номинанты:\s*/, "");
+      const body = line.slice(listMatch[0].length);
       const items = body.split(/\s\*\s+/).filter((s) => s.trim());
       for (const item of items) {
         const parsed = parseLinksFromChunk(item.replace(/^\*\s*/, ""));

@@ -13,16 +13,82 @@ export default function TmdbSearch() {
   const [error, setError] = useState<string | null>(null);
   const [results, setResults] = useState<TmdbSearchResult[]>([]);
   const [configured, setConfigured] = useState<boolean | null>(null);
+  const [fromEnv, setFromEnv] = useState(false);
   const [resolvingId, setResolvingId] = useState<number | null>(null);
+  const [keyInput, setKeyInput] = useState("");
+  const [keySaving, setKeySaving] = useState(false);
+  const [keyError, setKeyError] = useState<string | null>(null);
+  const [keySaved, setKeySaved] = useState(false);
+  // the stored key is shared by all visitors — changing it needs the admin token
+  const [canManage, setCanManage] = useState(false);
+  const [adminToken, setAdminToken] = useState("");
 
   useEffect(() => {
     fetch("/api/tmdb/status")
       .then((r) => r.json())
       .then((d) => {
         setConfigured(Boolean(d.configured));
+        setFromEnv(Boolean(d.fromEnv));
+        setCanManage(Boolean(d.canManage));
       })
       .catch(() => setConfigured(null));
   }, []);
+
+  async function saveKey(e: React.FormEvent) {
+    e.preventDefault();
+    const key = keyInput.trim();
+    if (key.length < 10) {
+      setKeyError("Вставьте ключ целиком");
+      return;
+    }
+    setKeySaving(true);
+    setKeyError(null);
+    try {
+      const res = await fetch("/api/tmdb/key", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-admin-token": adminToken.trim(),
+        },
+        body: JSON.stringify({ key }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setKeyError(data.error ?? "Не удалось сохранить ключ");
+        return;
+      }
+      setConfigured(true);
+      setKeySaved(true);
+      setKeyInput("");
+    } catch {
+      setKeyError("Ошибка сети — попробуйте ещё раз");
+    } finally {
+      setKeySaving(false);
+    }
+  }
+
+  async function removeKey() {
+    const token =
+      adminToken.trim() || window.prompt("Токен администратора (ADMIN_TOKEN)")?.trim();
+    if (!token) return;
+    setKeyError(null);
+    try {
+      const res = await fetch("/api/tmdb/key", {
+        method: "DELETE",
+        headers: { "x-admin-token": token },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setKeyError(data.error ?? "Не удалось удалить ключ");
+        return;
+      }
+      setAdminToken(token);
+      setConfigured(false);
+      setKeySaved(false);
+    } catch {
+      setKeyError("Ошибка сети — попробуйте ещё раз");
+    }
+  }
 
   async function doSearch(e?: React.FormEvent) {
     e?.preventDefault();
@@ -80,10 +146,62 @@ export default function TmdbSearch() {
         <div className="mb-5 rounded-2xl border border-sky-400/30 bg-sky-500/10 p-5 text-sm text-sky-200">
           <div className="font-semibold">TMDB временно не настроен</div>
           <p className="mt-2 text-sky-300/80">
-            Ключ задаёт администратор сервиса через защищённую конфигурацию. Пока можно
-            искать фильмы и награды через{" "}
+            Ключ задаёт администратор сервиса. Пока можно искать фильмы и награды через{" "}
             <a href="/imdb" className="underline">IMDb</a>.
           </p>
+
+          {canManage && (
+            <form onSubmit={saveKey} className="mt-4 flex flex-col gap-2 sm:flex-row">
+              <label htmlFor="tmdb-key-input" className="sr-only">Ключ TMDB API</label>
+              <input
+                id="tmdb-key-input"
+                type="password"
+                value={keyInput}
+                onChange={(e) => setKeyInput(e.target.value)}
+                placeholder="Ключ TMDB (v3 API Key или v4 Read Access Token)"
+                className="flex-1 rounded-xl border border-sky-300/30 bg-white/10 px-4 py-2.5 text-sm text-white placeholder-sky-300/50 outline-none focus:border-sky-300/70"
+                autoComplete="off"
+              />
+              <label htmlFor="tmdb-admin-token" className="sr-only">Токен администратора</label>
+              <input
+                id="tmdb-admin-token"
+                type="password"
+                value={adminToken}
+                onChange={(e) => setAdminToken(e.target.value)}
+                placeholder="Токен администратора"
+                className="rounded-xl border border-sky-300/30 bg-white/10 px-4 py-2.5 text-sm text-white placeholder-sky-300/50 outline-none focus:border-sky-300/70 sm:w-52"
+                autoComplete="off"
+              />
+              <button
+                type="submit"
+                disabled={keySaving || keyInput.trim().length < 10 || !adminToken.trim()}
+                className="rounded-xl bg-sky-500 px-6 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:opacity-50"
+              >
+                {keySaving ? "Проверяем…" : "Сохранить ключ"}
+              </button>
+            </form>
+          )}
+          {keyError && <div role="alert" className="mt-2 text-xs text-red-300">{keyError}</div>}
+        </div>
+      )}
+
+      {configured === true && keySaved && (
+        <div role="status" className="mb-5 rounded-xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
+          Ключ TMDB сохранён и проверен — поиск активен
+        </div>
+      )}
+
+      {configured === true && !fromEnv && !keySaved && canManage && (
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-xs text-slate-400">
+          <span>Используется ключ TMDB, сохранённый через интерфейс</span>
+          <button
+            type="button"
+            onClick={removeKey}
+            className="rounded-lg border border-white/15 px-3 py-1 transition hover:border-red-400/50 hover:text-red-300"
+          >
+            Удалить ключ
+          </button>
+          {keyError && <span role="alert" className="w-full text-red-300">{keyError}</span>}
         </div>
       )}
 

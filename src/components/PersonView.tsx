@@ -103,6 +103,12 @@ export default function PersonView() {
 
       {payload && (
         <>
+          {payload.partial && (
+            <div role="status" className="mb-4 rounded-xl border border-amber-400/30 bg-amber-500/10 px-5 py-3 text-sm text-amber-200">
+              Фильмография неполная: IMDb ограничил запросы. Откройте страницу ещё раз
+              через 10 минут — догрузим остальное.
+            </div>
+          )}
           <div className="flex flex-wrap items-start gap-5 rounded-2xl border border-white/10 bg-white/5 p-5">
             {payload.person.imageUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
