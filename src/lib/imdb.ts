@@ -1,5 +1,9 @@
 /* IMDb integration via the public suggestion API and api.imdbapi.dev */
 
+import { IMDB_NAME_ID, IMDB_TITLE_ID } from "./api";
+import { BROWSER_UA, fetchJson, sleep } from "./http";
+import { errorText, log } from "./log";
+
 export interface ImdbSearchResult {
   id: string;
   title: string;
@@ -51,39 +55,18 @@ export interface ImdbAwardsPayload {
   title: ImdbTitleInfo;
   stats: { nominationCount: number; winCount: number };
   nominations: ImdbNomination[];
+  /** The source stopped answering mid-way: `nominations` is incomplete */
+  partial?: boolean;
 }
 
-const UA = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" };
+const UA = { "User-Agent": BROWSER_UA };
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/** GET JSON with automatic retries on 429/5xx (api.imdbapi.dev rate-limits bursts) */
-async function getJson(url: string, timeoutMs = 30_000): Promise<unknown> {
-  let lastError: Error = new Error("request failed");
-  for (let attempt = 0; attempt < 6; attempt++) {
-    if (attempt > 0) await sleep(2000 * 2 ** (attempt - 1)); // 2s,4s,8s,16s,32s
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const res = await fetch(url, {
-        headers: UA,
-        signal: controller.signal,
-        cache: "no-store",
-      });
-      if (res.status === 429 || res.status >= 500) {
-        lastError = new Error(`HTTP ${res.status}`);
-        continue; // retry
-      }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-      // network/timeout errors are retried too
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  throw lastError;
+/**
+ * GET JSON with retries on 429/5xx and network errors (api.imdbapi.dev
+ * rate-limits bursts): waits 2s, 4s, 8s, 16s, 32s. Other 4xx fail at once.
+ */
+function getJson(url: string, timeoutMs = 30_000): Promise<unknown> {
+  return fetchJson(url, { headers: UA, timeoutMs, retries: 5, backoffMs: 2000 });
 }
 
 /** Search titles via IMDb suggestion API */
@@ -172,6 +155,8 @@ export interface ImdbFilmographyItem {
 export interface ImdbPersonPayload {
   person: ImdbNameInfo;
   filmography: ImdbFilmographyItem[];
+  /** The source stopped answering mid-way: `filmography` is incomplete */
+  partial?: boolean;
 }
 
 /** API returns dates as {year, month, day} objects — normalize to a display string */
@@ -189,7 +174,7 @@ function formatApiDate(
 
 /** Fetch person info + full filmography (paginated) */
 export async function fetchImdbPerson(nameId: string): Promise<ImdbPersonPayload> {
-  if (!/^nm\d{4,12}$/.test(nameId)) {
+  if (!IMDB_NAME_ID.test(nameId)) {
     throw new Error("Некорректный IMDb ID персоны");
   }
 
@@ -212,6 +197,7 @@ export async function fetchImdbPerson(nameId: string): Promise<ImdbPersonPayload
   const filmography: ImdbFilmographyItem[] = [];
   const seen = new Set<string>();
   let pageToken: string | undefined;
+  let partial = false;
   for (let page = 0; page < 20; page++) {
     if (page > 0) await sleep(1000); // stay under the API burst limit
     const url =
@@ -237,9 +223,11 @@ export async function fetchImdbPerson(nameId: string): Promise<ImdbPersonPayload
       data = (await getJson(url)) as FilmPage;
     } catch (err) {
       // Rate-limited mid-pagination: return what we already have
-      // (better a partial filmography than an error screen).
-      if (filmography.length > 0) break;
-      throw err;
+      // (better a partial filmography than an error screen) — flagged as partial.
+      if (filmography.length === 0) throw err;
+      log.warn("imdb", "filmography cut short", { nameId, page, error: errorText(err) });
+      partial = true;
+      break;
     }
     for (const c of data.credits ?? []) {
       const t = c.title;
@@ -263,7 +251,7 @@ export async function fetchImdbPerson(nameId: string): Promise<ImdbPersonPayload
   }
 
   filmography.sort((a, b) => (b.year ?? 0) - (a.year ?? 0));
-  return { person, filmography };
+  return { person, filmography, ...(partial ? { partial } : {}) };
 }
 
 /* ---------- Title image gallery ---------- */
@@ -287,7 +275,7 @@ export async function fetchTitleImages(
   pageToken?: string,
   pageSize = 50,
 ): Promise<GalleryPage> {
-  if (!/^tt\d{4,12}$/.test(imdbId)) {
+  if (!IMDB_TITLE_ID.test(imdbId)) {
     throw new Error("Некорректный IMDb ID");
   }
   const url =
@@ -314,7 +302,7 @@ export async function fetchTitleImages(
 
 /** Official (original) title — used e.g. for the gallery ZIP file name */
 export async function fetchOfficialTitle(imdbId: string): Promise<string> {
-  if (!/^tt\d{4,12}$/.test(imdbId)) {
+  if (!IMDB_TITLE_ID.test(imdbId)) {
     throw new Error("Некорректный IMDb ID");
   }
   const t = (await getJson(`https://api.imdbapi.dev/titles/${imdbId}`)) as {
@@ -326,7 +314,7 @@ export async function fetchOfficialTitle(imdbId: string): Promise<string> {
 
 /** Fetch title info + ALL award nominations (recursively through pagination) */
 export async function fetchImdbAwards(imdbId: string): Promise<ImdbAwardsPayload> {
-  if (!/^tt\d{4,12}$/.test(imdbId)) {
+  if (!IMDB_TITLE_ID.test(imdbId)) {
     throw new Error("Некорректный IMDb ID");
   }
 
@@ -371,6 +359,7 @@ export async function fetchImdbAwards(imdbId: string): Promise<ImdbAwardsPayload
   const nominations: ImdbNomination[] = [];
   let stats = { nominationCount: 0, winCount: 0 };
   let pageToken: string | undefined;
+  let partial = false;
 
   for (let page = 0; page < 40; page++) {
     if (page > 0) await sleep(1000); // stay under the API burst limit
@@ -386,9 +375,11 @@ export async function fetchImdbAwards(imdbId: string): Promise<ImdbAwardsPayload
     try {
       data = (await getJson(url)) as AwardsPage;
     } catch (err) {
-      // Rate-limited mid-pagination: keep the partial nomination list
-      if (nominations.length > 0) break;
-      throw err;
+      // Rate-limited mid-pagination: keep the nomination list, flagged as partial
+      if (nominations.length === 0) throw err;
+      log.warn("imdb", "nominations cut short", { imdbId, page, error: errorText(err) });
+      partial = true;
+      break;
     }
     if (data.stats) {
       stats = {
@@ -419,5 +410,5 @@ export async function fetchImdbAwards(imdbId: string): Promise<ImdbAwardsPayload
     if (!pageToken) break;
   }
 
-  return { title, stats, nominations };
+  return { title, stats, nominations, ...(partial ? { partial } : {}) };
 }

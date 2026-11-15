@@ -1,3 +1,4 @@
+# Значения ${...} берутся из файла .env рядом (см. .env.example); все необязательны.
 services:
   db:
     image: postgres:16-alpine
@@ -5,7 +6,9 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      # Пароль применяется только при первом создании тома pgdata.
+      # Сменить его у существующей базы: ALTER USER postgres PASSWORD '...'
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: app_db
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -25,11 +28,13 @@ services:
       db:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@db:5432/app_db
-      # Необязательные ключи внешних сервисов:
-      # TMDB_API_KEY: "ваш_v3_ключ_tmdb"
-      # TMDB_ACCESS_TOKEN: "ваш_v4_токен_tmdb"
-      # JINA_API_KEY: "ваш_ключ_jina_reader"
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@db:5432/app_db
+      # Токен администратора: без него ключ TMDB через интерфейс не сохранить и не удалить
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      # Необязательные ключи внешних сервисов
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
+      TMDB_ACCESS_TOKEN: ${TMDB_ACCESS_TOKEN:-}
+      JINA_API_KEY: ${JINA_API_KEY:-}
     networks:
       - internal
       - web

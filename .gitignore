@@ -6,6 +6,7 @@ tsconfig.tsbuildinfo
 # env / secrets
 .env
 .env.*
+!.env.example
 
 # python
 __pycache__/
@@ -15,3 +16,4 @@ python-prj/cache/
 # misc
 .DS_Store
 *.log
+next-env.d.ts

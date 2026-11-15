@@ -2,6 +2,7 @@ import type { ReportPayload } from "./types";
 import type { FilmMatch } from "./search-service";
 import type { ImdbAwardsPayload, ImdbNomination } from "./imdb";
 import { entryNominee, entryFilms, reportStats } from "./format";
+import { groupImdbNominations } from "./imdb-group";
 
 function esc(s: string): string {
   return s
@@ -227,36 +228,9 @@ export function buildFilmHtml(
 
 /* ------------------- IMDb awards ------------------- */
 
-interface ImdbGroup {
-  eventId: string;
-  eventName: string;
-  year?: number;
-  items: ImdbNomination[];
-}
-
-function groupImdbHtml(noms: ImdbNomination[]): ImdbGroup[] {
-  const groups: ImdbGroup[] = [];
-  for (const n of noms) {
-    let g = groups.find((x) => x.eventId === n.eventId && x.year === n.year);
-    if (!g) {
-      g = { eventId: n.eventId, eventName: n.eventName, year: n.year, items: [] };
-      groups.push(g);
-    }
-    g.items.push(n);
-  }
-  for (const g of groups)
-    g.items.sort((a, b) => Number(b.isWinner) - Number(a.isWinner));
-  groups.sort(
-    (a, b) =>
-      b.items.filter((i) => i.isWinner).length -
-        a.items.filter((i) => i.isWinner).length || b.items.length - a.items.length,
-  );
-  return groups;
-}
-
 export function buildImdbHtml(payload: ImdbAwardsPayload): string {
   const { title, stats, nominations } = payload;
-  const groups = groupImdbHtml(nominations);
+  const groups = groupImdbNominations(nominations);
   const wins = nominations.filter((n) => n.isWinner);
   const parts: string[] = [];
 

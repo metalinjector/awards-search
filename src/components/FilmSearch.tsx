@@ -27,9 +27,12 @@ const CONCURRENCY = 3;
 export default function FilmSearch({
   initialQuery,
   initialYear,
+  kpId,
 }: {
   initialQuery: string;
   initialYear: number;
+  /** Kinopoisk film id when the film was picked from the suggestions */
+  kpId?: string;
 }) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -37,7 +40,12 @@ export default function FilmSearch({
   const [currentPages, setCurrentPages] = useState<string[]>([]);
   const [matches, setMatches] = useState<FilmMatch[]>([]);
   const [missingCount, setMissingCount] = useState(0);
+  const [failedCount, setFailedCount] = useState(0);
   const startedRef = useRef(false);
+
+  const filmParams =
+    `q=${encodeURIComponent(initialQuery)}&year=${initialYear}` +
+    (kpId ? `&kp=${kpId}` : "");
 
   const run = useCallback(async () => {
     setPhase("planning");
@@ -51,6 +59,7 @@ export default function FilmSearch({
       const plan: PlanPage[] = planData.plan;
       const pending = plan.filter((p) => p.status === "pending");
       setMissingCount(plan.filter((p) => p.status === "missing").length);
+      setFailedCount(0);
 
       // 2) scan pending pages with limited concurrency
       if (pending.length > 0) {
@@ -75,9 +84,12 @@ export default function FilmSearch({
               const data = await res.json().catch(() => ({}));
               if (data.status === "missing") {
                 setMissingCount((c) => c + 1);
+              } else if (data.status !== "ok") {
+                // source unreachable / rate limit — not cached, retried next search
+                setFailedCount((c) => c + 1);
               }
             } catch {
-              // network hiccup — skip, will be retried next search
+              setFailedCount((c) => c + 1);
             }
             active.delete(label);
             done += 1;
@@ -92,9 +104,7 @@ export default function FilmSearch({
 
       // 3) search
       setPhase("searching");
-      const res = await fetch(
-        `/api/search/results?q=${encodeURIComponent(initialQuery)}&year=${initialYear}`,
-      );
+      const res = await fetch(`/api/search/results?${filmParams}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Ошибка поиска");
       setMatches(data.matches);
@@ -103,7 +113,7 @@ export default function FilmSearch({
       setError(e instanceof Error ? e.message : "Что-то пошло не так");
       setPhase("error");
     }
-  }, [initialQuery, initialYear]);
+  }, [initialYear, filmParams]);
 
   useEffect(() => {
     if (startedRef.current) return;
@@ -181,6 +191,22 @@ export default function FilmSearch({
 
       {phase === "done" && (
         <div>
+          {failedCount > 0 && (
+            <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-amber-400/30 bg-amber-500/10 px-5 py-3 text-sm text-amber-200">
+              <span className="min-w-0 flex-1">
+                ⚠ Не удалось загрузить {failedCount}{" "}
+                {plural(failedCount, "страницу", "страницы", "страниц")} премий — Кинопоиск
+                не ответил. Результаты могут быть неполными.
+              </span>
+              <button
+                onClick={() => void run()}
+                className="rounded-lg border border-amber-300/40 px-3 py-1 hover:bg-amber-500/20"
+              >
+                Досканировать
+              </button>
+            </div>
+          )}
+
           {/* export buttons */}
           {matches.length > 0 && (
             <div className="mb-4 flex flex-wrap items-center justify-end gap-2">
@@ -188,19 +214,19 @@ export default function FilmSearch({
                 Сохранить результаты:
               </span>
               <a
-                href={`/api/export/film/xlsx?q=${encodeURIComponent(initialQuery)}&year=${initialYear}`}
+                href={`/api/export/film/xlsx?${filmParams}`}
                 className="rounded-xl bg-emerald-600 px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-600/20 transition hover:bg-emerald-500"
               >
                 ⬇ XLSX
               </a>
               <a
-                href={`/api/export/film/md?q=${encodeURIComponent(initialQuery)}&year=${initialYear}`}
+                href={`/api/export/film/md?${filmParams}`}
                 className="rounded-xl bg-slate-700 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-600"
               >
                 ⬇ Markdown
               </a>
               <a
-                href={`/api/export/film/html?q=${encodeURIComponent(initialQuery)}&year=${initialYear}`}
+                href={`/api/export/film/html?${filmParams}`}
                 className="rounded-xl bg-sky-700 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-600"
               >
                 ⬇ HTML
@@ -238,8 +264,8 @@ export default function FilmSearch({
                 годов ничего не найдено.
               </div>
               <div className="mt-2 text-sm text-slate-500">
-                Попробуйте оригинальное название фильма, часть названия или другой год
-                выпуска.
+                Попробуйте оригинальное название фильма, другой год выпуска или выберите
+                фильм кнопкой «Подобрать» — тогда поиск идёт по его карточке на Кинопоиске.
               </div>
             </div>
           )}

@@ -2,13 +2,14 @@ import { and, between, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { reports, scanMisses } from "@/db/schema";
 import { AWARDS, scanYears } from "./awards";
-import { fetchAndParseAward } from "./parser";
+import { makeEntryMatcher } from "./film-match";
+import { isReportStale } from "./freshness";
+import { errorText, log } from "./log";
+import { AwardNotFoundError } from "./parser";
+import { fetchAward, MISS_TTL_MS, recordMiss, saveReport } from "./report-service";
 import type { Entry } from "./types";
 
 export type PageStatus = "cached" | "missing" | "pending";
-
-/** A recorded miss is trusted for 24h — award pages appear on Kinopoisk over time */
-const MISS_TTL_MS = 1000 * 60 * 60 * 24;
 
 export interface PlanPage {
   slug: string;
@@ -17,6 +18,15 @@ export interface PlanPage {
   status: PageStatus;
 }
 
+/**
+ * Whether a cached report already lists winners. Only evaluated for reports
+ * fetched during (or before) their award year — later ones are final anyway.
+ */
+const hasWinnersSql = sql<boolean>`case
+  when ${reports.year} < extract(year from ${reports.fetchedAt} at time zone 'UTC') then true
+  else jsonb_path_exists(${reports.payload}, '$.categories[*].entries[*] ? (@.winner == true)')
+end`;
+
 /** Build the scan plan for a film year: which award/year pages are cached, missing, or need scanning */
 export async function buildScanPlan(filmYear: number): Promise<PlanPage[]> {
   const years = scanYears(filmYear);
@@ -24,7 +34,12 @@ export async function buildScanPlan(filmYear: number): Promise<PlanPage[]> {
 
   const [cachedRows, missRows] = await Promise.all([
     db
-      .select({ slug: reports.awardSlug, year: reports.year })
+      .select({
+        slug: reports.awardSlug,
+        year: reports.year,
+        fetchedAt: reports.fetchedAt,
+        hasWinners: hasWinnersSql,
+      })
       .from(reports)
       .where(between(reports.year, years[0], years[years.length - 1])),
     db
@@ -37,8 +52,18 @@ export async function buildScanPlan(filmYear: number): Promise<PlanPage[]> {
       .where(between(scanMisses.year, years[0], years[years.length - 1])),
   ]);
 
-  const cached = new Set(cachedRows.map((r) => `${r.slug}:${r.year}`));
   const now = Date.now();
+  // reports that may have changed at the source go back into the scan queue
+  const cached = new Set(
+    cachedRows
+      .filter((r) => !isReportStale(r.year, r.fetchedAt, r.hasWinners, now))
+      .map((r) => `${r.slug}:${r.year}`),
+  );
+  const outdated = new Set(
+    cachedRows
+      .filter((r) => !cached.has(`${r.slug}:${r.year}`))
+      .map((r) => `${r.slug}:${r.year}`),
+  );
   const missed = new Set(
     missRows
       .filter((r) => now - r.checkedAt.getTime() < MISS_TTL_MS)
@@ -55,7 +80,7 @@ export async function buildScanPlan(filmYear: number): Promise<PlanPage[]> {
         year,
         status: cached.has(key)
           ? "cached"
-          : missed.has(key)
+          : missed.has(key) && !outdated.has(key)
             ? "missing"
             : "pending",
       });
@@ -64,46 +89,39 @@ export async function buildScanPlan(filmYear: number): Promise<PlanPage[]> {
   return plan;
 }
 
-/** Scan a single award/year page: cache report on success, record a miss on failure */
-export async function scanPage(
-  slug: string,
-  year: number,
-): Promise<"ok" | "missing"> {
-  // already cached?
+export type ScanStatus = "ok" | "missing" | "error";
+
+/**
+ * Scan a single award/year page.
+ *  - "ok": a report is cached (fresh, or an older copy we kept because the refresh failed)
+ *  - "missing": the page is known not to exist — remembered for 24h
+ *  - "error": the source was unreachable; nothing is recorded, the next search retries
+ */
+export async function scanPage(slug: string, year: number): Promise<ScanStatus> {
   const existing = await db
-    .select({ id: reports.id })
+    .select({ fetchedAt: reports.fetchedAt, hasWinners: hasWinnersSql })
     .from(reports)
     .where(and(eq(reports.awardSlug, slug), eq(reports.year, year)))
     .limit(1);
-  if (existing.length > 0) return "ok";
-
-  const canonicalUrl = `https://www.kinopoisk.ru/awards/${slug}/${year}/`;
-  try {
-    const payload = await fetchAndParseAward(slug, year, { quick: true });
-    await db
-      .insert(reports)
-      .values({
-        awardSlug: slug,
-        year,
-        awardName: payload.awardName,
-        sourceUrl: canonicalUrl,
-        payload,
-        fetchedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: [reports.awardSlug, reports.year],
-        set: { awardName: payload.awardName, payload, fetchedAt: sql`now()` },
-      });
+  if (
+    existing.length > 0 &&
+    !isReportStale(year, existing[0].fetchedAt, existing[0].hasWinners)
+  ) {
     return "ok";
-  } catch {
-    await db
-      .insert(scanMisses)
-      .values({ awardSlug: slug, year })
-      .onConflictDoUpdate({
-        target: [scanMisses.awardSlug, scanMisses.year],
-        set: { checkedAt: sql`now()` },
-      });
-    return "missing";
+  }
+
+  try {
+    const payload = await fetchAward(slug, year, true);
+    await saveReport(slug, year, payload);
+    return "ok";
+  } catch (err) {
+    if (existing.length > 0) return "ok"; // keep serving the older copy
+    if (err instanceof AwardNotFoundError) {
+      await recordMiss(slug, year);
+      return "missing";
+    }
+    log.warn("scan", "page not scanned", { slug, year, error: errorText(err) });
+    return "error";
   }
 }
 
@@ -121,19 +139,15 @@ export interface FilmSearchResult {
   scannedAwards: number;
 }
 
-/** Normalize for fuzzy matching: lowercase, ё→е, strip typographic quotes */
-function norm(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/ё/g, "е")
-    .replace(/[«»"“”'’]/g, "")
-    .trim();
-}
-
-/** Search cached reports of the 3-year window for a film title (ru or original) */
+/**
+ * Search cached reports of the 3-year window for a film.
+ * With `kpId` (film picked from Kinopoisk) entries are matched by film id;
+ * otherwise by title — as whole words, in Russian or the original.
+ */
 export async function searchFilm(
   query: string,
   filmYear: number,
+  kpId?: string,
 ): Promise<FilmSearchResult> {
   const years = scanYears(filmYear);
   if (years.length === 0) return { matches: [], scannedAwards: 0 };
@@ -142,19 +156,13 @@ export async function searchFilm(
     .from(reports)
     .where(inArray(reports.year, years));
 
-  const q = norm(query);
+  const isMatch = makeEntryMatcher({ title: query, kpId });
   const matches: FilmMatch[] = [];
 
   for (const row of rows) {
     for (const cat of row.payload.categories) {
       for (const e of cat.entries) {
-        const inFilms = e.films.some((f) => norm(f.text).includes(q));
-        const inEn = norm(e.en).includes(q);
-        const filmOnly =
-          e.people.length === 0 &&
-          e.films.length === 0 &&
-          norm(e.ru).includes(q);
-        if (inFilms || inEn || filmOnly) {
+        if (isMatch(e)) {
           matches.push({
             awardSlug: row.awardSlug,
             awardName: row.awardName,

@@ -30,22 +30,25 @@ export default function PersonView() {
   const [filter, setFilter] = useState("");
   const loadedRef = useRef<string | null>(null);
 
+  function load(refresh = false) {
+    setLoading(true);
+    setError(null);
+    fetch(`/api/imdb/person?id=${id}${refresh ? "&refresh=1" : ""}`)
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "Ошибка загрузки");
+        setPayload(data);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : "Ошибка"))
+      .finally(() => setLoading(false));
+  }
+
   useEffect(() => {
     if (!id || loadedRef.current === id) return;
     loadedRef.current = id;
-    const timer = setTimeout(() => {
-      setLoading(true);
-      setError(null);
-      fetch(`/api/imdb/person?id=${id}`)
-        .then(async (res) => {
-          const data = await res.json();
-          if (!res.ok) throw new Error(data.error ?? "Ошибка загрузки");
-          setPayload(data);
-        })
-        .catch((e) => setError(e instanceof Error ? e.message : "Ошибка"))
-        .finally(() => setLoading(false));
-    }, 0);
+    const timer = setTimeout(load, 0);
     return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   if (!id) {
@@ -77,22 +80,8 @@ export default function PersonView() {
           {error}
           <button
             onClick={() => {
-              loadedRef.current = null;
-              setError(null);
-              // re-trigger effect by resetting the ref and forcing a state change
               setPayload(null);
-              setTimeout(() => {
-                loadedRef.current = id;
-                setLoading(true);
-                fetch(`/api/imdb/person?id=${id}`)
-                  .then(async (res) => {
-                    const data = await res.json();
-                    if (!res.ok) throw new Error(data.error ?? "Ошибка загрузки");
-                    setPayload(data);
-                  })
-                  .catch((e) => setError(e instanceof Error ? e.message : "Ошибка"))
-                  .finally(() => setLoading(false));
-              }, 0);
+              load();
             }}
             className="ml-3 rounded-lg border border-red-300/40 px-3 py-1 text-sm hover:bg-red-500/20"
           >
@@ -103,6 +92,19 @@ export default function PersonView() {
 
       {payload && (
         <>
+          {payload.partial && (
+            <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-amber-400/30 bg-amber-500/10 px-5 py-3 text-sm text-amber-200">
+              <span className="min-w-0 flex-1">
+                ⚠ Фильмография неполная: IMDb API ограничил запросы.
+              </span>
+              <button
+                onClick={() => load(true)}
+                className="rounded-lg border border-amber-300/40 px-3 py-1 hover:bg-amber-500/20"
+              >
+                Дозагрузить
+              </button>
+            </div>
+          )}
           <div className="flex flex-wrap items-start gap-5 rounded-2xl border border-white/10 bg-white/5 p-5">
             {payload.person.imageUrl ? (
               // eslint-disable-next-line @next/next/no-img-element

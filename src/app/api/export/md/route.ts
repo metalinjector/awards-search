@@ -1,28 +1,12 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getStoredReport } from "@/lib/report-service";
+import type { NextRequest } from "next/server";
+import { download } from "@/lib/api";
+import { loadReportExport } from "@/lib/export-routes";
 import { buildMarkdown } from "@/lib/exporters";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
-  const slug = req.nextUrl.searchParams.get("slug") ?? "";
-  const year = parseInt(req.nextUrl.searchParams.get("year") ?? "", 10);
-  if (!slug || !Number.isFinite(year)) {
-    return NextResponse.json({ error: "Нужны параметры slug и year" }, { status: 400 });
-  }
-
-  const stored = await getStoredReport(slug, year);
-  if (!stored) {
-    return NextResponse.json({ error: "Отчёт не найден" }, { status: 404 });
-  }
-
-  const md = buildMarkdown(stored.payload);
-  const filename = `${slug}-${year}.md`;
-
-  return new NextResponse(md, {
-    headers: {
-      "Content-Type": "text/markdown; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
-    },
-  });
+  const data = await loadReportExport(req);
+  if (data instanceof Response) return data;
+  return download(buildMarkdown(data.payload), "md", `${data.fileBase}.md`);
 }

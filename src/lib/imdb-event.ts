@@ -3,6 +3,9 @@
  * of a specific award ceremony (e.g. Oscars 2025).
  */
 
+import { IMDB_EVENT_ID, parseYear } from "./api";
+import { PermanentError, request } from "./http";
+
 export interface EventEntity {
   /** tt... or nm... */
   id: string;
@@ -89,42 +92,29 @@ interface RawNominationNode {
   };
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-async function gql(variables: Record<string, unknown>): Promise<unknown> {
-  let lastError: Error = new Error("GraphQL request failed");
-  for (let attempt = 0; attempt < 4; attempt++) {
-    if (attempt > 0) await sleep(1500 * 2 ** (attempt - 1));
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 45_000);
-    try {
-      const res = await fetch(GRAPHQL_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: QUERY, variables }),
-        signal: controller.signal,
-        cache: "no-store",
-      });
-      if (res.status === 429 || res.status >= 500) {
-        lastError = new Error(`HTTP ${res.status}`);
-        continue;
-      }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+/** POST the query; 429/5xx and network errors are retried, GraphQL errors are not */
+function gql(variables: Record<string, unknown>): Promise<unknown> {
+  return request(
+    GRAPHQL_URL,
+    async (res) => {
       const data = (await res.json()) as {
         data?: unknown;
         errors?: Array<{ message?: string }>;
       };
       if (data.errors?.length) {
-        throw new Error(data.errors[0]?.message ?? "GraphQL error");
+        throw new PermanentError(data.errors[0]?.message ?? "GraphQL error");
       }
       return data.data;
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  throw lastError;
+    },
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query: QUERY, variables }),
+      timeoutMs: 45_000,
+      retries: 3,
+      backoffMs: 1500,
+    },
+  );
 }
 
 function mapTitles(items?: RawTitle[]): EventEntity[] {
@@ -152,8 +142,8 @@ export async function fetchEventEdition(
   eventId: string,
   year: number,
 ): Promise<EventEditionPayload> {
-  if (!/^ev\d{4,12}$/.test(eventId)) throw new Error("Некорректный ID события");
-  if (year < 1900 || year > 2100) throw new Error("Некорректный год");
+  if (!IMDB_EVENT_ID.test(eventId)) throw new Error("Некорректный ID события");
+  if (parseYear(year) === null) throw new Error("Некорректный год");
 
   const data = (await gql({ eventId, year })) as {
     nominationEvent?: {

@@ -1,80 +1,102 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { Zip, ZipPassThrough } from "fflate";
+import { contentDisposition, IMDB_TITLE_ID, jsonError, MIME, safeFileName } from "@/lib/api";
+import { BROWSER_UA, fetchBytes, sleep } from "@/lib/http";
 import {
   fetchOfficialTitle,
   fetchTitleImages,
   type GalleryImage,
+  type GalleryPage,
 } from "@/lib/imdb";
+import { errorText, log } from "@/lib/log";
+import { rateLimited } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 600;
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Each archive proxies hundreds of megabytes — keep the number of parallel ones small */
+const MAX_ACTIVE = 2;
+let active = 0;
 
-/** Strip characters that are invalid in file names */
-function safeFileName(s: string): string {
-  return s.replace(/[\\/:*?"<>|]+/g, "").replace(/\s+/g, " ").trim();
-}
+/** Images fetched ahead of the one being written */
+const WINDOW = 4;
+const MAX_PAGES = 60;
+const IMAGE_TIMEOUT_MS = 60_000;
 
-/** RFC 5987 encoding for Content-Disposition filename* */
-function rfc5987(s: string): string {
-  return encodeURIComponent(s).replace(/['()]/g, escape).replace(/\*/g, "%2A");
-}
-
-async function fetchImage(url: string): Promise<ArrayBuffer | null> {
+async function fetchImage(url: string, signal: AbortSignal): Promise<ArrayBuffer | null> {
   try {
-    const res = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
-      cache: "no-store",
+    return await fetchBytes(url, {
+      headers: { "User-Agent": BROWSER_UA },
+      timeoutMs: IMAGE_TIMEOUT_MS,
+      signal,
     });
-    if (!res.ok) return null;
-    return await res.arrayBuffer();
   } catch {
-    return null;
+    return null; // broken image — skipped
   }
 }
 
 export async function GET(req: NextRequest) {
   const id = (req.nextUrl.searchParams.get("id") ?? "").trim();
-  if (!/^tt\d{4,12}$/.test(id)) {
-    return NextResponse.json({ error: "Некорректный IMDb ID" }, { status: 400 });
-  }
-
-  // Collect the full image list (metadata only) + the official title
-  let images: GalleryImage[];
-  let title: string;
-  try {
-    images = [];
-    let token: string | undefined;
-    for (let page = 0; page < 60; page++) {
-      const p = await fetchTitleImages(id, token);
-      images.push(...p.images);
-      token = p.nextPageToken;
-      if (!token) break;
-    }
-    title = safeFileName(await fetchOfficialTitle(id));
-  } catch (err) {
-    const message =
-      err instanceof Error ? err.message : "Не удалось получить галерею";
-    return NextResponse.json({ error: message }, { status: 502 });
-  }
-  if (images.length === 0) {
-    return NextResponse.json(
-      { error: "В галерее нет изображений" },
-      { status: 404 },
+  if (!IMDB_TITLE_ID.test(id)) return jsonError("Некорректный IMDb ID", 400);
+  const limited = rateLimited(req, "zip");
+  if (limited) return limited;
+  if (active >= MAX_ACTIVE) {
+    return Response.json(
+      { error: "Сейчас скачивается слишком много архивов — повторите через минуту." },
+      { status: 503, headers: { "Retry-After": "60" } },
     );
   }
 
-  const zipName = `${title} img.zip`;
-  const pad = String(images.length).length;
+  // Only the title and the first page are needed before the download can start;
+  // the rest of the image list is paged in while the archive is streaming.
+  let first: GalleryPage;
+  let title: string;
+  try {
+    [first, title] = await Promise.all([fetchTitleImages(id), fetchOfficialTitle(id)]);
+  } catch (err) {
+    return jsonError(errorText(err) || "Не удалось получить галерею", 502);
+  }
+  if (first.images.length === 0) {
+    return jsonError("В галерее нет изображений", 404);
+  }
+
+  const zipName = `${safeFileName(title, id, 120)} img.zip`;
+  const pad = String(Math.max(first.totalCount, first.images.length)).length;
+  const abort = new AbortController();
+  req.signal.addEventListener("abort", () => abort.abort(), { once: true });
+
+  /** The full image list, page by page */
+  async function* allImages(): AsyncGenerator<GalleryImage> {
+    let page = first;
+    for (let n = 1; ; n++) {
+      yield* page.images;
+      if (!page.nextPageToken || n >= MAX_PAGES || abort.signal.aborted) return;
+      try {
+        page = await fetchTitleImages(id, page.nextPageToken);
+      } catch (err) {
+        // the archive is already on its way — finish it with what we have
+        log.warn("zip", "image list cut short", { id, page: n, error: errorText(err) });
+        return;
+      }
+    }
+  }
+
+  active += 1;
+  let released = false;
+  const release = () => {
+    if (!released) {
+      released = true;
+      active -= 1;
+    }
+  };
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const zip = new Zip((err, chunk, final) => {
+        if (abort.signal.aborted) return;
         if (err) {
-          try {
-            controller.error(err);
-          } catch {}
+          abort.abort();
+          controller.error(err);
           return;
         }
         controller.enqueue(chunk);
@@ -83,28 +105,39 @@ export async function GET(req: NextRequest) {
 
       try {
         // Sliding window: prefetch a few images ahead, append strictly in order
-        const WINDOW = 4;
-        const pending: (Promise<ArrayBuffer | null> | undefined)[] = [];
-        for (let i = 0; i < Math.min(WINDOW, images.length); i++) {
-          pending[i] = fetchImage(images[i].url);
-        }
-        for (let i = 0; i < images.length; i++) {
-          const ahead = i + WINDOW;
-          if (ahead < images.length) pending[ahead] = fetchImage(images[ahead].url);
+        const source = allImages();
+        const queue: { image: GalleryImage; data: Promise<ArrayBuffer | null> }[] = [];
+        const fill = async () => {
+          while (queue.length < WINDOW) {
+            const next = await source.next();
+            if (next.done) return;
+            queue.push({
+              image: next.value,
+              data: fetchImage(next.value.url, abort.signal),
+            });
+          }
+        };
 
-          const buf = await pending[i];
-          pending[i] = undefined; // release memory
-          if (!buf) continue; // skip broken images
+        let index = 0;
+        for (await fill(); queue.length > 0; await fill()) {
+          const { image, data } = queue.shift()!;
+          index += 1;
+          const buf = await data;
 
-          // Respect backpressure: don't run far ahead of the client
-          while ((controller.desiredSize ?? 1) <= 0) await sleep(50);
+          // Respect backpressure: don't run far ahead of the client.
+          // (After a cancel desiredSize stays 0 forever — hence the abort check.)
+          while (!abort.signal.aborted && (controller.desiredSize ?? 1) <= 0) {
+            await sleep(50);
+          }
+          if (abort.signal.aborted) return;
+          if (!buf) continue;
 
           const ext =
-            images[i].url.match(/\.(jpe?g|png|gif|webp)(?:$|\?)/i)?.[1]?.toLowerCase() ??
+            image.url.match(/\.(jpe?g|png|gif|webp)(?:$|\?)/i)?.[1]?.toLowerCase() ??
             "jpg";
           const name =
-            `${String(i + 1).padStart(pad, "0")}` +
-            (images[i].type ? `_${images[i].type}` : "") +
+            String(index).padStart(pad, "0") +
+            (image.type ? `_${safeFileName(image.type, "image")}` : "") +
             `.${ext}`;
           // JPEGs don't compress — store as-is (fast, streams instantly)
           const file = new ZipPassThrough(name);
@@ -113,20 +146,26 @@ export async function GET(req: NextRequest) {
         }
         zip.end();
       } catch (err) {
-        try {
+        if (!abort.signal.aborted) {
+          log.error("zip", "archive failed", { id, error: errorText(err) });
+          abort.abort();
           controller.error(err);
-        } catch {}
+        }
+      } finally {
+        release();
       }
     },
     cancel() {
-      // client aborted the download — nothing to clean up, fetches will GC
+      // client aborted the download: stop the loop and the in-flight image fetches
+      abort.abort();
+      release();
     },
   });
 
   return new Response(stream, {
     headers: {
-      "Content-Type": "application/zip",
-      "Content-Disposition": `attachment; filename="${zipName.replace(/[^\x20-\x7e]/g, "_")}"; filename*=UTF-8''${rfc5987(zipName)}`,
+      "Content-Type": MIME.zip,
+      "Content-Disposition": contentDisposition(zipName),
       "Cache-Control": "no-store",
     },
   });
