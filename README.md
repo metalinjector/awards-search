@@ -98,4 +98,5 @@ Next.js app ────── PostgreSQL
 | `GET /api/metrics` | Снимок внутренних метрик, только admin |
 | `POST/DELETE /api/tmdb/key` | Управление серверным ключом, только admin |
 
-Admin-endpoint’ы принимают `Authorization: Bearer <ADMIN_TOKEN>`.
+Admin-endpoint’ы принимают `Authorization: Bearer <ADMIN_TOKEN>` или заголовок
+`x-admin-token`; ключ TMDB можно задать и формой на странице `/tmdb`.
